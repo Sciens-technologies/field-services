@@ -2,77 +2,36 @@ import datetime
 from typing import List, Optional
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Security
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field, EmailStr
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, ForeignKey, Enum, Boolean
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session, relationship
-from sqlalchemy.orm import joinedload
-from passlib.hash import bcrypt  # For password hashing
-import jwt  # PyJWT for token-based authentication
-from pydantic import ValidationError
-from enum import Enum as PyEnum
-import logging
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from typing import Any, Dict
+from fastapi import Depends, HTTPException, status, Request
+from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import text
+import jwt
+import os
+from dotenv import load_dotenv
 
-from db.models import *
-from api.schemas import *
-from api.utils.util import get_db
+from db.models import User, UserRole, Role, Permission, RolePermission
+from db.database import get_db
+import datetime as dt
+# Load environment variables
+load_dotenv()
 
-security = HTTPBearer()
+# JWT settings
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+JWT_ACCESS_TOKEN_EXPIRES_IN = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRES_IN", "86400"))  # 24 hours
+JWT_REFRESH_TOKEN_EXPIRES_IN = int(os.getenv("JWT_REFRESH_TOKEN_EXPIRES_IN", "2592000"))  # 30 days
 
-def get_user_by_email(db: Session, email: str) -> Optional[User]:
-    return db.query(User).filter(User.email == email).first()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/users/login/")
+security = HTTPBearer(auto_error=False)
 
+def get_user_by_email(db: Session, email: str):
+    return db.query(User).filter(User.email.ilike(email.strip())).first()
 
 def get_user_by_id(db: Session, user_id: int) -> Optional[User]:
     return db.query(User).filter(User.id == user_id).first()
 
-
-def get_work_order_by_id(db: Session, work_order_id: int) -> Optional[WorkOrder]:
-    return db.query(WorkOrder).filter(WorkOrder.id == work_order_id).first()
-
-
-def create_user(db: Session, user: UserCreate, hashed_password: str) -> User:
-    db_user = User(
-        email=user.email,
-        hashed_password=hashed_password,
-        first_name=user.first_name,
-        last_name=user.last_name,
-        role=user.role
-    )
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    return db_user
-
-
-def generate_password() -> str:
-    """Generates a random password."""
-    return uuid4().hex[:8]  # Example: 8-character random string
-
-
-def create_jwt_token(user_id: int, email: str, role: UserRole, expires_in: int) -> str:
-    """Generates a JWT token for authentication."""
-    payload = {
-        "sub": str(user_id),  # Use string for user ID in token
-        "email": email,
-        "role": role.value,
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(seconds=expires_in),
-        "iat": datetime.datetime.utcnow(),
-    }
-    return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
-
-
-
 def decode_jwt_token(token: str) -> dict:
-    """Decodes a JWT token."""
     try:
         payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
         return payload
@@ -80,30 +39,177 @@ def decode_jwt_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="Token has expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
 
+def get_current_user(
+    db: Session = Depends(get_db),
+    token: str = Depends(oauth2_scheme)
+) -> User:
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        user_id = int(payload.get("sub"))
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid authentication credentials")
+        user = db.query(User).filter(User.id == user_id).first()
+        if user is None:
+            raise HTTPException(status_code=401, detail="User not found")
+        return user
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid authentication credentials")
 
+def get_current_user_optional(
+    request: Request, 
+    db: Session = Depends(get_db)
+) -> Optional[User]:
+    try:
+        return get_current_user(request, db)
+    except Exception:
+        return None
 
-def get_current_user(db: Session = Depends(get_db), token: HTTPAuthorizationCredentials = Security(security)) -> User:
-    """
-    Validates the JWT token and returns the current user.
-    Raises an exception if the token is invalid or expired.
-    """
-    payload = decode_jwt_token(token.credentials)
-    user_id = int(payload.get("sub"))  # Convert sub back to integer
-    user = get_user_by_id(db, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return user
-
-
-def has_role(allowed_roles: List[UserRole]):
-    """
-    Checks if the current user has the required role.
-    """
-    def _has_role(current_user: User = Depends(get_current_user)) -> User:
-        if current_user.role not in allowed_roles:
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
+def has_role(allowed_roles):
+    async def role_checker(current_user: User = Depends(get_current_user)):
+        role_name = None
+        if hasattr(current_user, 'role') and current_user.role:
+            role_name = current_user.role.name
+        elif hasattr(current_user, 'role_id'):
+            role_id_to_name = {
+                1: UserRole.SUPER_ADMIN.value,
+                2: UserRole.MANAGER.value,
+                3: UserRole.AGENT.value
+            }
+            role_name = role_id_to_name.get(current_user.role_id)
+        if not role_name or role_name not in [role.value for role in allowed_roles]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to access this resource",
+            )
         return current_user
-    return _has_role
+    return role_checker
+
+def get_user_from_token(
+    token: str,
+    db: Session = Depends(get_db)
+) -> User:
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token is required",
+        )
+    try:
+        payload = decode_jwt_token(token)
+        user_id = int(payload.get("sub"))
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return user
+    except Exception as e:
+        print(f"Error in get_user_from_token: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Could not validate token: {str(e)}",
+        )
+
+def has_permission(required_permission):
+    async def permission_checker(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+        result = db.execute(
+            text("""
+            SELECT EXISTS (
+                SELECT 1 FROM users u
+                JOIN roles r ON u.role_id = r.id
+                JOIN role_permissions rp ON r.id = rp.role_id
+                JOIN permissions p ON rp.permission_id = p.id
+                WHERE u.id = :user_id AND p.name = :permission_name
+            )
+            """),
+            {"user_id": current_user.id, "permission_name": required_permission}
+        ).scalar()
+        if not result:
+            result = db.execute(
+                text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM user_permissions up
+                    JOIN permissions p ON up.permission_id = p.id
+                    WHERE up.user_id = :user_id AND p.name = :permission_name
+                )
+                """),
+                {"user_id": current_user.id, "permission_name": required_permission}
+            ).scalar()
+        if not result:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You don't have the required permission: {required_permission}",
+            )
+        return current_user
+    return permission_checker
+
+def generate_secure_password(length=12):
+    import secrets, string
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+    password = ''.join(secrets.choice(alphabet) for _ in range(length))
+    return password
+
+def create_jwt_token(data: dict, expires_delta: dt.timedelta):
+    to_encode = data.copy()
+    expire = dt.datetime.utcnow() + expires_delta
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    # Ensure it's a string
+    if isinstance(encoded_jwt, bytes):
+        encoded_jwt = encoded_jwt.decode()
+    return encoded_jwt
+
+def ensure_datetime(dt_value):
+    if dt_value is None:
+        return datetime.datetime.utcnow()
+    if isinstance(dt_value, str):
+        try:
+            if 'T' in dt_value:
+                if dt_value.endswith('Z'):
+                    dt_value = dt_value[:-1] + '+00:00'
+                return datetime.datetime.fromisoformat(dt_value)
+            else:
+                return datetime.datetime.strptime(dt_value, "%Y-%m-%d")
+        except ValueError:
+            print(f"Could not parse datetime: {dt_value}")
+            return datetime.datetime.utcnow()
+    return dt_value
+
+def user_to_response(user, db=None):
+    role_name = None
+    if hasattr(user, 'role') and user.role:
+        if hasattr(user.role, 'name'):
+            role_name = user.role.name
+        else:
+            role_name = str(user.role)
+    elif hasattr(user, 'role_id') and user.role_id and db:
+        role = db.query(Role).filter(Role.id == user.role_id).first()
+        role_name = role.name if role else None
+    return {
+        "id": user.id,
+        "email": user.email,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "role": role_name,
+        "status": user.status,
+        "phone_number": getattr(user, 'phone_number', None),
+        "created_at": ensure_datetime(user.created_at),
+        "updated_at": ensure_datetime(user.updated_at)
+    }
+
+def generate_tokens(user_id, email, role_id):
+    access_token = create_jwt_token(
+        data={"sub": str(user_id), "email": email, "role_id": role_id},
+        expires_delta=dt.timedelta(seconds=JWT_ACCESS_TOKEN_EXPIRES_IN)
+    )
+    refresh_token = create_jwt_token(
+        data={"sub": str(user_id), "email": email, "role_id": role_id},
+        expires_delta=dt.timedelta(seconds=JWT_REFRESH_TOKEN_EXPIRES_IN)
+    )
+    # Ensure tokens are strings, not bytes
+    if isinstance(access_token, bytes):
+        access_token = access_token.decode()
+    if isinstance(refresh_token, bytes):
+        refresh_token = refresh_token.decode()
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token
+    }

@@ -5,9 +5,13 @@ CREATE TABLE users (
     name VARCHAR(100),
     password_hash TEXT NOT NULL,
     role_id INTEGER REFERENCES roles(id),
-    status VARCHAR(20) CHECK (status IN ('active', 'inactive')) DEFAULT 'active',
+    status VARCHAR(20) CHECK (status IN ('active', 'inactive', 'blocked')) DEFAULT 'active',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    notification_preferences JSONB DEFAULT '{}'::jsonb,
+    blocked_at TIMESTAMP,
+    block_reason TEXT
+    work_center_id = Column(Integer, ForeignKey("work_centers.id"), nullable=True)
 );
 
 
@@ -16,6 +20,15 @@ CREATE TABLE roles (
     id SERIAL PRIMARY KEY,
     name VARCHAR(50) NOT NULL UNIQUE
 );
+CREATE TABLE user_activity_logs (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    actor_id INTEGER NOT NULL,
+    action VARCHAR(50),
+    details TEXT,
+    timestamp TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 
 -- permissions table
 CREATE TABLE permissions (
@@ -124,4 +137,47 @@ CREATE TABLE notifications (
     message TEXT,
     is_read BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- password_reset_tokens table
+CREATE TABLE password_reset_tokens (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    token VARCHAR(255) NOT NULL UNIQUE,
+    expires_at TIMESTAMP NOT NULL,
+    used BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE feedback (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    subject VARCHAR(255),
+    message TEXT,
+    status VARCHAR(50),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE user_notification_preference (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    preferences JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Add work_center_id to users
+CREATE TABLE work_centers (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    location VARCHAR(100),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE users ADD COLUMN work_center_id INTEGER REFERENCES work_centers(id);
+CREATE TABLE notification_history (
+    id INT PRIMARY KEY,
+    user_id INT,
+    type VARCHAR(50),
+    event VARCHAR(50),
+    message TEXT,
+    status VARCHAR(20),
+    sent_at TIMESTAMP
 );
