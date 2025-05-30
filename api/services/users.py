@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 from db.models import User, UserRole, Role, Permission, RolePermission
 from db.database import get_db
-import datetime as dt
+
 # Load environment variables
 load_dotenv()
 
@@ -22,7 +22,7 @@ JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_ACCESS_TOKEN_EXPIRES_IN = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRES_IN", "86400"))  # 24 hours
 JWT_REFRESH_TOKEN_EXPIRES_IN = int(os.getenv("JWT_REFRESH_TOKEN_EXPIRES_IN", "2592000"))  # 30 days
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/users/login/")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/users/token")
 security = HTTPBearer(auto_error=False)
 
 def get_user_by_email(db: Session, email: str):
@@ -147,15 +147,15 @@ def generate_secure_password(length=12):
     password = ''.join(secrets.choice(alphabet) for _ in range(length))
     return password
 
-def create_jwt_token(data: dict, expires_delta: dt.timedelta):
-    to_encode = data.copy()
-    expire = dt.datetime.utcnow() + expires_delta
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
-    # Ensure it's a string
-    if isinstance(encoded_jwt, bytes):
-        encoded_jwt = encoded_jwt.decode()
-    return encoded_jwt
+def create_jwt_token(user_id: int, email: str, role_id: int, expires_in: int) -> str:
+    payload = {
+        "sub": str(user_id),
+        "email": email,
+        "role_id": role_id,
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(seconds=expires_in),
+        "iat": datetime.datetime.utcnow(),
+    }
+    return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
 def ensure_datetime(dt_value):
     if dt_value is None:
@@ -194,22 +194,16 @@ def user_to_response(user, db=None):
         "created_at": ensure_datetime(user.created_at),
         "updated_at": ensure_datetime(user.updated_at)
     }
-
-def generate_tokens(user_id, email, role_id):
-    access_token = create_jwt_token(
-        data={"sub": str(user_id), "email": email, "role_id": role_id},
-        expires_delta=dt.timedelta(seconds=JWT_ACCESS_TOKEN_EXPIRES_IN)
-    )
-    refresh_token = create_jwt_token(
-        data={"sub": str(user_id), "email": email, "role_id": role_id},
-        expires_delta=dt.timedelta(seconds=JWT_REFRESH_TOKEN_EXPIRES_IN)
-    )
-    # Ensure tokens are strings, not bytes
-    if isinstance(access_token, bytes):
-        access_token = access_token.decode()
-    if isinstance(refresh_token, bytes):
-        refresh_token = refresh_token.decode()
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token
-    }
+def role_required(allowed_roles: list[str]):
+    def wrapper(
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db)
+    ) -> User:
+        role = db.query(Role).filter(Role.id == current_user.role_id).first()
+        if not role or role.name.lower() not in [r.lower() for r in allowed_roles]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to perform this action"
+            )
+        return current_user
+    return wrapper

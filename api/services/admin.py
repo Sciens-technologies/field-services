@@ -24,16 +24,3 @@ def block_user(user_id: int, db: Session):
     db.commit()
     return {"detail": "User blocked"}
 
-def role_required(allowed_roles: list[str]):
-    def wrapper(
-        current_user: User = Depends(get_current_user),
-        db: Session = Depends(get_db)
-    ) -> User:
-        role = db.query(Role).filter(Role.id == current_user.role_id).first()
-        if not role or role.name not in allowed_roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to perform this action"
-            )
-        return current_user
-    return wrapper

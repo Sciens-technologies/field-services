@@ -11,7 +11,6 @@ CREATE TABLE users (
     notification_preferences JSONB DEFAULT '{}'::jsonb,
     blocked_at TIMESTAMP,
     block_reason TEXT
-    work_center_id = Column(Integer, ForeignKey("work_centers.id"), nullable=True)
 );
 
 
@@ -20,15 +19,6 @@ CREATE TABLE roles (
     id SERIAL PRIMARY KEY,
     name VARCHAR(50) NOT NULL UNIQUE
 );
-CREATE TABLE user_activity_logs (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL,
-    actor_id INTEGER NOT NULL,
-    action VARCHAR(50),
-    details TEXT,
-    timestamp TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
 
 -- permissions table
 CREATE TABLE permissions (
@@ -148,36 +138,34 @@ CREATE TABLE password_reset_tokens (
     used BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- user_notification_preferences table
+CREATE TABLE user_notification_preferences (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    email_notifications JSONB NOT NULL DEFAULT '{}',
+    sms_notifications JSONB NOT NULL DEFAULT '{}',
+    push_notifications JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- notification_history table
+CREATE TABLE notification_history (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id),
+    type VARCHAR(10) NOT NULL, -- email, sms, push
+    event VARCHAR(50) NOT NULL, -- e.g., password_changes
+    message TEXT NOT NULL,
+    status VARCHAR(20) NOT NULL, -- delivered, failed
+    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- feedback table
 CREATE TABLE feedback (
     id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL,
-    subject VARCHAR(255),
-    message TEXT,
-    status VARCHAR(50),
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    subject VARCHAR(150) NOT NULL,
+    message TEXT NOT NULL,
+    status VARCHAR(20) DEFAULT 'open',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE user_notification_preference (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL,
-    preferences JSONB,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Add work_center_id to users
-CREATE TABLE work_centers (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    location VARCHAR(100),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-ALTER TABLE users ADD COLUMN work_center_id INTEGER REFERENCES work_centers(id);
-CREATE TABLE notification_history (
-    id INT PRIMARY KEY,
-    user_id INT,
-    type VARCHAR(50),
-    event VARCHAR(50),
-    message TEXT,
-    status VARCHAR(20),
-    sent_at TIMESTAMP
 );

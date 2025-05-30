@@ -7,7 +7,6 @@ from typing import Optional
 import logging
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail, Email, To, Content, HtmlContent   
-import aiosmtplib
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -314,34 +313,6 @@ Regards,
 ENEO Admin Team
 """
     )
-
-async def send_support_email(ticket_id, subject, message, user_email="Anonymous"):
-    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(os.getenv("SMTP_PORT", 587))
-    smtp_user = os.getenv("SMTP_USER", "your-email@gmail.com")
-    smtp_password = os.getenv("SMTP_PASSWORD", "your-app-password")
-    support_email = os.getenv("SUPPORT_EMAIL", "support@yourcompany.com")
-
-    msg = MIMEMultipart()
-    msg["From"] = smtp_user
-    msg["To"] = support_email
-    msg["Subject"] = f"New Feedback Ticket #{ticket_id}"
-
-    body = f"""
-    New feedback/support ticket submitted:
-    Ticket ID: {ticket_id}
-    User Email: {user_email}
-    Subject: {subject}
-    Message: {message}
-    """
-    msg.attach(MIMEText(body, "plain"))
-
-    smtp = aiosmtplib.SMTP(hostname=smtp_host, port=smtp_port, use_tls=False)
-    await smtp.connect()
-    await smtp.starttls()
-    await smtp.login(smtp_user, smtp_password)
-    await smtp.send_message(msg)
-    await smtp.quit()
 
 
 
