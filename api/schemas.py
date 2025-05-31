@@ -1,7 +1,6 @@
 import datetime
 from typing import List, Optional, Dict
 from pydantic import BaseModel, Field, EmailStr, validator
-
 # If you use WorkOrderStatus Enum, import it like this:
 # from db.models import WorkOrderStatus
 
@@ -47,7 +46,7 @@ class UserResponse(BaseModel):
     @classmethod
     def from_orm(cls, obj):
         data = {}
-        for field in cls.__fields__:
+        for field in cls._fields_:
             if hasattr(obj, field):
                 value = getattr(obj, field)
                 if field == 'role' and value is not None:
@@ -61,7 +60,7 @@ class UserResponse(BaseModel):
 
 # --- Auth Schemas ---
 class LoginRequest(BaseModel):
-    email: EmailStr
+    username: EmailStr
     password: str
 
 class TokenSchema(BaseModel):
@@ -179,12 +178,35 @@ class ResetPasswordRequest(BaseModel):
 # --- Permissions ---
 class PermissionAssignRequest(BaseModel):
     role_name: str = Field(..., example="admin")
-    permissions: Dict[str, bool] = Field(
-        ...,
-        example={"create": True, "edit": False, "delete": True, "view": True},
-        description="Permission names as keys, true to assign, false to remove."
-    )
+    permissions: List[str] = Field(..., example=["create", "delete", "view"])
 
 class PermissionCreateRequest(BaseModel):
     name: str
     description: str = ""
+
+# --- User Login Response ---
+class UserLoginResponse(BaseModel):
+    access_token: str
+    token_type: str
+    id: int
+    first_name: str
+    last_name: str
+    role: str
+    email: EmailStr
+
+class UserInfo(BaseModel):
+    id: int
+    email: EmailStr
+    first_name: str
+    last_name: str
+    role: str
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user: UserInfo
+    id: int
+    first_name: str
+    last_name: str
+    role: str
+    email: EmailStr

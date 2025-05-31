@@ -18,6 +18,7 @@ import string
 from api.services.users import get_current_user_optional
 from api.services.users import create_jwt_token, JWT_ACCESS_TOKEN_EXPIRES_IN, JWT_REFRESH_TOKEN_EXPIRES_IN
 from api.utils.util import generate_random_password
+import datetime as dt
 
 # Use in your endpoint:
 generated_password = generate_random_password()
@@ -32,6 +33,7 @@ SUPPORTED_EVENTS = {
 # Session timeout settings
 INACTIVITY_TIMEOUT_STR = os.getenv("INACTIVITY_TIMEOUT", "900")
 INACTIVITY_TIMEOUT = int(INACTIVITY_TIMEOUT_STR.split('#')[0].strip())  # 15 minutes in seconds
+
 from api.schemas import (
     UserCreate, UserResponse, UserUpdate, TokenSchema, 
     LoginRequest, SignupRequest, RefreshTokenRequest,
@@ -54,7 +56,7 @@ from passlib.hash import bcrypt
 # Load environment variables
 
 # --- Auth ---
-@users_router.post("/users/token", tags=["Auth"])  # Login (all users)
+@users_router.post("/users/token", tags=["Auth"])
 async def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db)
@@ -75,30 +77,13 @@ async def login_for_access_token(
     print("Login successful")
     return {
         "access_token": tokens["access_token"],
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "id": user.id,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "role": user.role.name if hasattr(user.role, "name") else user.role,
+        "email": user.email
     }
-
-@users_router.post("/logout/")      # Logout (all users)
-async def logout(token: str = Query(..., description="Access token to invalidate"), 
-                db: Session = Depends(get_db)):
-    """
-    Logout a user by invalidating their token.
-    """
-    try:
-        # Find the token in the database
-        db_token = db.query(Token).filter(Token.access_token == token).first()
-        if not db_token:
-            raise HTTPException(status_code=404, detail="Token not found")
-        
-        # Mark the token as revoked
-        db_token.revoked = True
-        db.commit()
-        
-        return {"message": "Successfully logged out"}
-    except Exception as e:
-        db.rollback()
-        print(f"Error in logout: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error during logout: {str(e)}")
 
 # --- Signup ---
 @users_router.post("/signup/", response_model=UserResponse)  # Signup (first user or admin)
@@ -535,30 +520,40 @@ async def check_session_status(
         raise HTTPException(status_code=500, detail=f"Error checking session status: {str(e)}")
 
 # --- 3. Profile & Password ---
-@users_router.put("/profile/", response_model=UserResponse)
-def update_profile(
+@users_router.put("/profile/")
+async def update_profile(
     update_data: UpdateProfileRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Query the user from the current session
-    user = db.query(User).filter(User.id == current_user.id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    # Update fields
-    if update_data.first_name is not None:
-        user.first_name = update_data.first_name
-    if update_data.last_name is not None:
-        user.last_name = update_data.last_name
-    if update_data.email is not None:
-        user.email = update_data.email
-    if update_data.phone_number is not None:
-        user.phone_number = update_data.phone_number
-
-    db.commit()
-    db.refresh(user)
-    return UserResponse.from_orm(user)
+    try:
+        # Always fetch the user from the current session
+        user = db.query(User).filter(User.id == current_user.id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        # Update fields
+        if update_data.first_name:
+            user.first_name = update_data.first_name
+        if update_data.last_name:
+            user.last_name = update_data.last_name
+        if update_data.email:
+            # Check if email is already taken by another user
+            existing_user = get_user_by_email(db, update_data.email)
+            if existing_user and existing_user.id != current_user.id:
+                raise HTTPException(status_code=400, detail="Email already in use")
+            user.email = update_data.email
+        if update_data.phone_number:
+            user.phone_number = update_data.phone_number
+        
+        user.updated_at = datetime.datetime.utcnow()
+        db.commit()
+        db.refresh(user)
+        
+        return {"message": "Profile updated successfully"}
+    except Exception as e:
+        db.rollback()
+        print(f"Error updating profile: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error updating profile: {str(e)}")
 
 @users_router.post("/change-password/")
 async def change_password(
@@ -647,58 +642,27 @@ async def forgot_password(
         print(f"Error in forgot password: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
 
-@users_router.post("/reset-password/{token}")
+@users_router.post("/reset-password/")
 async def reset_password(
-    token: str,
+    email: EmailStr = Query(..., description="User email address"),
     new_password: str = Query(..., min_length=8),
     db: Session = Depends(get_db)
 ):
     """
-    Reset password using the token sent to user's email.
+    Reset password using the user's email and new password.
     """
     try:
-        # Find the token in the database
-        reset_token = db.execute(
-            text("""
-            SELECT * FROM password_reset_tokens 
-            WHERE token = :token AND expires_at > :current_time
-            """),
-            {"token": token, "current_time": datetime.datetime.utcnow()}
-        ).fetchone()
-        
-        if not reset_token:
-            raise HTTPException(status_code=400, detail="Invalid or expired token")
-        
-        # Get the user (use ORM to ensure session persistence)
-        user = db.query(User).filter(User.id == reset_token.user_id).first()
+        user = get_user_by_email(db, email)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
-        # Update password
         user.hashed_password = bcrypt.hash(new_password)
         user.updated_at = datetime.datetime.utcnow()
-        
-        # Delete the used token
-        db.execute(
-            text("DELETE FROM password_reset_tokens WHERE token = :token"),
-            {"token": token}
-        )
-        
-        # Revoke all existing tokens for this user
-        db.execute(
-            text("UPDATE auth_tokens SET revoked = TRUE WHERE user_id = :user_id"),
-            {"user_id": user.id}
-        )
-        
         db.commit()
-        
         return {"message": "Password has been reset successfully"}
-    except HTTPException:
-        raise
     except Exception as e:
         db.rollback()
         print(f"Error resetting password: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error resetting password")
+        raise HTTPException(status_code=500, detail=f"Error resetting password: {str(e)}")
 
 # --- 6. OAuth2 Password Grant ---
 @users_router.post("/users/token")
@@ -735,9 +699,6 @@ def generate_tokens(user_id, email, role_id):
 
 
 
-def filter_bool_dict(d):
-    return {k: v for k, v in d.items() if isinstance(v, bool)}
-
 @users_router.get("/notifications/preferences/", response_model=NotificationPreferencesResponse)
 async def get_notification_preferences(
     current_user: User = Depends(get_current_user),
@@ -745,18 +706,17 @@ async def get_notification_preferences(
 ):
     prefs = db.query(UserNotificationPreferences).filter_by(user_id=current_user.id).first()
     if not prefs:
-        # Default: all enabled
         return NotificationPreferencesResponse(
             user_id=current_user.id,
-            email_notifications={e: True for e in SUPPORTED_EVENTS["email_notifications"]},
-            sms_notifications={e: True for e in SUPPORTED_EVENTS["sms_notifications"]},
-            push_notifications={e: True for e in SUPPORTED_EVENTS["push_notifications"]}
+            email=True,
+            sms=True,
+            push=True
         )
     return NotificationPreferencesResponse(
         user_id=current_user.id,
-        email_notifications=filter_bool_dict(prefs.email_notifications),
-        sms_notifications=filter_bool_dict(prefs.sms_notifications),
-        push_notifications=filter_bool_dict(prefs.push_notifications)
+        email=all(prefs.email_notifications.values()),
+        sms=all(prefs.sms_notifications.values()),
+        push=all(prefs.push_notifications.values())
     )
 
 @users_router.put("/notifications/preferences/", response_model=NotificationPreferencesResponse)
@@ -774,44 +734,43 @@ async def update_notification_preferences(
             push_notifications={e: True for e in SUPPORTED_EVENTS["push_notifications"]}
         )
         db.add(prefs)
-
-    # Update only if provided
+    # Update all events for each type if provided
     if preferences.email is not None:
-        for k in prefs.email_notifications:
+        for k in prefs.email_notifications.keys():
             prefs.email_notifications[k] = preferences.email
     if preferences.sms is not None:
-        for k in prefs.sms_notifications:
+        for k in prefs.sms_notifications.keys():
             prefs.sms_notifications[k] = preferences.sms
     if preferences.push is not None:
-        for k in prefs.push_notifications:
+        for k in prefs.push_notifications.keys():
             prefs.push_notifications[k] = preferences.push
-
+    prefs.updated_at = datetime.datetime.utcnow()
     db.commit()
     db.refresh(prefs)
     return NotificationPreferencesResponse(
         user_id=current_user.id,
-        email_notifications=prefs.email_notifications,
-        sms_notifications=prefs.sms_notifications,
-        push_notifications=prefs.push_notifications
+        email=all(prefs.email_notifications.values()),
+        sms=all(prefs.sms_notifications.values()),
+        push=all(prefs.push_notifications.values())
     )
 
-@users_router.get("/notifications/preferences/", response_model=NotificationPreferencesResponse)
-async def get_notification_preferences(
-    current_user: User = Depends(get_current_user),
+@users_router.post("/logout-by-email/")
+async def logout_by_email(
+    email: EmailStr = Query(..., description="User email address"),
     db: Session = Depends(get_db)
 ):
-    prefs = db.query(UserNotificationPreferences).filter_by(user_id=current_user.id).first()
-    if not prefs:
-        # Default: all enabled
-        return NotificationPreferencesResponse(
-            user_id=current_user.id,
-            email_notifications={e: True for e in SUPPORTED_EVENTS["email_notifications"]},
-            sms_notifications={e: True for e in SUPPORTED_EVENTS["sms_notifications"]},
-            push_notifications={e: True for e in SUPPORTED_EVENTS["push_notifications"]}
-        )
-    return NotificationPreferencesResponse(
-        user_id=current_user.id,
-        email=prefs.email_notifications.get("some_event", True),
-        sms=prefs.sms_notifications.get("some_event", True),
-        push=prefs.push_notifications.get("some_event", True)
-    )
+    """
+    Logout a user by email by revoking all their tokens.
+    """
+    try:
+        user = get_user_by_email(db, email)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        # Revoke all tokens for this user
+        db.query(Token).filter(Token.user_id == user.id, Token.revoked == False).update({"revoked": True})
+        db.commit()
+        return {"message": f"Successfully logged out user {email}"}
+    except Exception as e:
+        db.rollback()
+        print(f"Error in logout by email: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error during logout: {str(e)}")

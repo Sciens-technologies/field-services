@@ -169,3 +169,5 @@ CREATE TABLE feedback (
     status VARCHAR(20) DEFAULT 'open',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+ALTER TABLE role_permissions ADD COLUMN created_at TIMESTAMP;
+
