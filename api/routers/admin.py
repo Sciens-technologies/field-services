@@ -210,6 +210,7 @@ async def admin_create_user(
         hashed_password=hashed_password,
         role_id=role.id,
         status='active',
+        phone_number=user_data.phone_number,
         created_at=datetime.datetime.utcnow(),
         updated_at=datetime.datetime.utcnow()
     )
@@ -281,6 +282,7 @@ async def admin_create_user(
         hashed_password=hashed_password,
         role_id=role.id,
         status='active',
+        phone_number=user_data.phone_number,
         created_at=dt.datetime.utcnow(),
         updated_at=dt.datetime.utcnow()
     )
@@ -433,6 +435,7 @@ async def admin_create_user(
         hashed_password=hashed_password,
         role_id=role.id,
         status='active',
+        phone_number=user_data.phone_number,
         created_at=dt.datetime.utcnow(),
         updated_at=dt.datetime.utcnow()
     )

@@ -265,6 +265,9 @@ class UserPermission(Base):
 class UserNotificationPreferences(Base):
     __tablename__ = "user_notification_preferences"
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    email_enabled = Column(Boolean, default=True)
+    sms_enabled = Column(Boolean, default=True)
+    push_enabled = Column(Boolean, default=True)
     email_notifications = Column(JSONB, nullable=False, default=dict)
     sms_notifications = Column(JSONB, nullable=False, default=dict)
     push_notifications = Column(JSONB, nullable=False, default=dict)

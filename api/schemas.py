@@ -16,7 +16,6 @@ class UserCreate(UserBase):
 class UpdateProfileRequest(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
-    email: Optional[EmailStr] = None
     phone_number: Optional[str] = None
 class UserUpdate(UserBase):
     is_active: bool
@@ -83,8 +82,12 @@ class SignupRequest(BaseModel):
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
 
-class AdminCreateUserRequest(UserBase):
-    pass
+class AdminCreateUserRequest(BaseModel):
+    email: EmailStr
+    first_name: str
+    last_name: str
+    role: str
+    phone_number: Optional[str] = None
 
 # --- Work Order Schemas ---
 class WorkOrderBase(BaseModel):

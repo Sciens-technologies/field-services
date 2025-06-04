@@ -171,3 +171,14 @@ CREATE TABLE feedback (
 );
 ALTER TABLE role_permissions ADD COLUMN created_at TIMESTAMP;
 
+-- Add email_enabled column with default true
+ALTER TABLE user_notification_preferences 
+ADD COLUMN email_enabled BOOLEAN NOT NULL DEFAULT true;
+
+-- Add sms_enabled column with default true
+ALTER TABLE user_notification_preferences 
+ADD COLUMN sms_enabled BOOLEAN NOT NULL DEFAULT true;
+
+-- Add push_enabled column with default true
+ALTER TABLE user_notification_preferences 
+ADD COLUMN push_enabled BOOLEAN NOT NULL DEFAULT true;

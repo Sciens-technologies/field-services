@@ -7,7 +7,9 @@ import traceback
 
 from api.routers.users import users_router
 from api.routers.admin import admin_router
-
+from dotenv import load_dotenv
+import os
+load_dotenv()
 docs_url = "/docs"
 
 app = FastAPI(
