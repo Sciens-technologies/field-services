@@ -1,26 +1,34 @@
 from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from db.models import User, Role
+from db.models import User, Role, UserStatusAudit
 from db.database import get_db
 from api.services.users import get_current_user
+import datetime
 
-def admin_required(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-) -> User:
-    role = db.query(Role).filter(Role.id == current_user.role_id).first()
-    if not role or role.name not in ("admin", "super_admin"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to perform this action"
-        )
-    return current_user
-
-def block_user(user_id: int, db: Session):
-    user = db.query(User).filter(User.id == user_id).first()
+def block_user(user_id: int, db: Session, current_user: User):
+    user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    user.status = "blocked"
+    
+    # Store old status for audit
+    old_status = user.status
+    
+    # Update user status
+    user.status = "BLOCKED"
+    user.updated_at = datetime.datetime.utcnow()
+    user.last_modified_by = current_user.username
+    
+    # Create status audit record
+    audit = UserStatusAudit(
+        user_id=user.user_id,
+        changed_by=current_user.username,
+        old_status=old_status,
+        new_status="BLOCKED",
+        reason="User blocked by admin",
+        changed_at=datetime.datetime.utcnow()
+    )
+    db.add(audit)
     db.commit()
-    return {"detail": "User blocked"}
+    
+    return {"detail": "User blocked successfully"}
 
