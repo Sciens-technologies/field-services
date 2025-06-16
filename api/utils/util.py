@@ -117,6 +117,36 @@ def log_notification(db, user_id: int, notif_type: str, event: str, message: str
     db.commit()
 
 
-def generate_random_password(length=12):
-    alphabet = string.ascii_letters + string.digits
-    return ''.join(secrets.choice(alphabet) for _ in range(length))
+def generate_random_password(length: int = 12) -> str:
+    """
+    Generate a secure random password.
+    
+    Args:
+        length (int): Length of the password. Defaults to 12.
+        
+    Returns:
+        str: A secure random password containing uppercase, lowercase, digits and special characters.
+    """
+    # Define character sets
+    uppercase = string.ascii_uppercase
+    lowercase = string.ascii_lowercase
+    digits = string.digits
+    special = "!@#$%^&*()_+-=[]{}|;:,.<>?"
+    
+    # Ensure at least one character from each set
+    password = [
+        secrets.choice(uppercase),
+        secrets.choice(lowercase),
+        secrets.choice(digits),
+        secrets.choice(special)
+    ]
+    
+    # Fill the rest with random characters from all sets
+    all_chars = uppercase + lowercase + digits + special
+    password.extend(secrets.choice(all_chars) for _ in range(length - 4))
+    
+    # Shuffle the password
+    password_list = list(password)
+    secrets.SystemRandom().shuffle(password_list)
+    
+    return ''.join(password_list)

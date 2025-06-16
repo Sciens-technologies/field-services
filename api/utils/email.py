@@ -240,52 +240,36 @@ The Field Service App Team
     
     return send_email(email, subject, body, html_content)
 
-def send_temporary_password_email(email: str, username: str, temp_password: str) -> bool:
+async def send_temporary_password_email(email_to: str, username: str, temp_password: str):
     """
-    Sends an email with a temporary password to the user.
-    Returns True if successful, False otherwise.
+    Send an email with temporary password to a newly created user.
+    
+    Args:
+        email_to (str): Recipient's email address
+        username (str): User's username
+        temp_password (str): Temporary password generated for the user
     """
-    subject = "Your Temporary Password - Field Service App"
+    subject = "Your Field Services Account Credentials"
+    body = f"""
+    Welcome to Field Services!
     
-    # Create plain text email body
-    body = f"""Hello {username},
-
-A temporary password has been generated for your Field Service App account.
-
-Your temporary password is: {temp_password}
-
-Please log in and change your password immediately.
-
-Best regards,
-The Field Service App Team
-"""
-
-    # Create HTML email body
-    html_content = f"""
-<!DOCTYPE html>
-<html>
-<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <div style="background-color: #4a90e2; color: white; padding: 15px; text-align: center;">
-        <h2>Temporary Password</h2>
-    </div>
+    Your account has been created by an administrator.
     
-    <div style="padding: 20px; border: 1px solid #ddd;">
-        <p>Hello {username},</p>
-        <p>A temporary password has been generated for your Field Service App account.</p>
-        
-        <div style="background-color: #f5f5f5; padding: 15px; margin: 15px 0; border-left: 4px solid #4a90e2;">
-            <p><strong>Temporary Password:</strong> {temp_password}</p>
-        </div>
-        
-        <p>Please log in and change your password immediately.</p>
-        
-        <p>Best regards,<br>The Field Service App Team</p>
-    </div>
-</body>
-</html>
-"""
+    Here are your login credentials:
+    Username: {username}
+    Temporary Password: {temp_password}
     
-    return send_email(email, subject, body, html_content)
+    For security reasons, please change your password after your first login.
+    
+    Best regards,
+    Field Services Team
+    """
+    
+    return send_email(
+        to_email=email_to,
+        subject=subject,
+        plain_text=body
+    )
 
 
 

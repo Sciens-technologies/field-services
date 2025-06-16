@@ -10,7 +10,7 @@ from db.database import get_db
 from db.models import User, Token
 
 # Configuration
-SECRET_KEY = "your-secret-key-here"  # In production, use a secure secret key
+SECRET_KEY = "your-secure-secret-key-123"  # Use the same secret key as in users.py
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 

@@ -1,15 +1,11 @@
+
 -- users and profile module tables 
 
 -- ==============================
 -- USERS TABLE
 -- ==============================
-CREATE TYPE user_status_enum AS ENUM ('ACTIVE', 'INACTIVE', 'BLOCKED', 'DEACTIVATED');
-CREATE TYPE work_order_status_enum AS ENUM ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'REJECTED');
-CREATE TYPE notification_type_enum AS ENUM ('EMAIL', 'SMS', 'PUSH', 'IN_APP');
-CREATE TYPE request_type_enum AS ENUM ('NEW_CONNECTION', 'SUBSCRIPTION', 'COMPLAINT', 'TERMINATION', 'OTHER');
-
 CREATE TABLE users (
-    user_id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     uuid VARCHAR(75) UNIQUE,
     username VARCHAR(100) NOT NULL UNIQUE,         -- same as login
     email VARCHAR(150) NOT NULL UNIQUE,
@@ -23,7 +19,7 @@ CREATE TABLE users (
     
     is_2fa_enabled BOOLEAN DEFAULT FALSE,
     activated BOOLEAN DEFAULT TRUE,
-    status user_status_enum DEFAULT 'ACTIVE',
+    status ENUM('ACTIVE', 'INACTIVE', 'BLOCKED', 'DEACTIVATED') DEFAULT 'ACTIVE',
 
     external_id VARCHAR(75),
     token TEXT,                                    -- for optional session handling
@@ -39,44 +35,29 @@ CREATE TABLE users (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     reset_at TIMESTAMP,
     last_modified_by VARCHAR(50),
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     
-    CONSTRAINT ux_users_username UNIQUE (username),
-    CONSTRAINT ux_users_email UNIQUE (email)
+      
+    UNIQUE KEY ux_users_username (username),
+    UNIQUE KEY ux_users_email (email)
 );
 
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = CURRENT_TIMESTAMP;
-    RETURN NEW;
-END;
-$$ language 'plpgsql';
-
-CREATE TRIGGER update_users_updated_at
-    BEFORE UPDATE ON users
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
 
 -- ==============================
 -- ROLES TABLE
 -- ==============================
 CREATE TABLE roles (
-    role_id BIGSERIAL PRIMARY KEY,
+    role_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     role_name VARCHAR(100) NOT NULL UNIQUE,
     description TEXT,
-    status VARCHAR(75) DEFAULT NULL,
-    active BOOLEAN DEFAULT TRUE,
+    status VARCHAR(75) NULL DEFAULT NULL,
+    active TINYINT(1) NULL DEFAULT '1',
     created_by VARCHAR(50) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_modified_by VARCHAR(50),
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
-CREATE TRIGGER update_roles_updated_at
-    BEFORE UPDATE ON roles
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
 
 -- ==============================
 -- user_roles TABLE
@@ -140,17 +121,18 @@ CREATE TABLE user_status_audit (
 -- ==============================
 -- LOGS & NOTIFICATIONS
 -- ==============================
-CREATE TABLE notification_templates (
-  template_id BIGSERIAL PRIMARY KEY,
-  name VARCHAR(100) NOT NULL,
-  template_key VARCHAR(50) NOT NULL,
-  subject VARCHAR(255) NOT NULL,
-  content TEXT NOT NULL,
-  notification_type notification_type_enum NOT NULL,
-  active BOOLEAN DEFAULT TRUE,
-  status VARCHAR(75),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY template_key (template_key)
+CREATE TABLE `notification_templates` (
+  `template_id` bigint NOT NULL AUTO_INCREMENT,
+  `name` varchar(100) NOT NULL,
+  `template_key` varchar(50) NOT NULL,
+  `subject` varchar(255) NOT NULL,
+  `content` text NOT NULL,
+  `notification_type` enum('EMAIL','SMS','PUSH','IN_APP') NOT NULL,
+  `active` tinyint(1) DEFAULT '1',
+  	status VARCHAR(75) NULL DEFAULT NULL,
+   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`template_id`),
+  UNIQUE KEY `template_key` (`template_key`)
 );
 
 -- artifact_notification_events
@@ -463,7 +445,7 @@ CREATE TABLE work_centres (
 
 -- 2. work_orders
 CREATE TABLE work_orders (
-    work_order_id BIGSERIAL PRIMARY KEY,
+    work_order_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     wo_number VARCHAR(100) UNIQUE NOT NULL,
     title VARCHAR(255),
     description TEXT,
@@ -475,13 +457,16 @@ CREATE TABLE work_orders (
     longitude DECIMAL(11,8),
     scheduled_date TIMESTAMP,
     due_date TIMESTAMP,
-    priority VARCHAR(10) DEFAULT 'MEDIUM',
-    status work_order_status_enum DEFAULT 'PENDING',
-    created_by BIGINT REFERENCES users(user_id),
-    work_centre_id BIGINT REFERENCES work_centres(work_centre_id),
+    priority ENUM('LOW', 'MEDIUM', 'HIGH', 'URGENT') DEFAULT 'MEDIUM',
+    status ENUM('PENDING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'REJECTED') DEFAULT 'PENDING',
+    created_by BIGINT,
+    work_centre_id BIGINT, -- NEW
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    active BOOLEAN DEFAULT TRUE
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+	 active TINYINT(1) NULL DEFAULT '1',
+	 
+    FOREIGN KEY (created_by) REFERENCES users(user_id),
+    FOREIGN KEY (work_centre_id) REFERENCES work_centres(work_centre_id) -- NEW
 );
 
 -- 3. work_order_assignments
@@ -634,15 +619,18 @@ CREATE TABLE work_order_reassign (
 
 -- 1. work_order_data_capture
 CREATE TABLE work_order_data_capture (
-    capture_id BIGSERIAL PRIMARY KEY,
-    work_order_id BIGINT REFERENCES work_orders(work_order_id) NOT NULL,
-    request_type request_type_enum NOT NULL,
-    agent_id BIGINT REFERENCES users(user_id) NOT NULL,
+    capture_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    work_order_id BIGINT NOT NULL,
+    request_type ENUM('NEW_CONNECTION', 'SUBSCRIPTION', 'COMPLAINT', 'TERMINATION', 'OTHER') NOT NULL,
+    agent_id BIGINT NOT NULL,
     captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     offline_captured BOOLEAN DEFAULT FALSE,
     synced BOOLEAN DEFAULT TRUE,
-    status VARCHAR(75),
-    active BOOLEAN DEFAULT TRUE
+    status VARCHAR(75) NULL DEFAULT NULL,
+    active TINYINT(1) NULL DEFAULT '1',
+
+    FOREIGN KEY (work_order_id) REFERENCES work_orders(work_order_id),
+    FOREIGN KEY (agent_id) REFERENCES users(user_id)
 );
 
 -- 2. new_connection_capture
@@ -864,46 +852,43 @@ CREATE TABLE work_centre_subcontractors (
     FOREIGN KEY (subcontractor_id) REFERENCES subcontractor_companies(subcontractor_id),
     FOREIGN KEY (assigned_by) REFERENCES users(user_id)
 );
+-- First create the ENUM types
+CREATE TYPE feedback_category AS ENUM ('BUG', 'FEATURE', 'IMPROVEMENT', 'OTHER');
+CREATE TYPE feedback_priority AS ENUM ('LOW', 'MEDIUM', 'HIGH', 'URGENT');
+CREATE TYPE feedback_status AS ENUM ('PENDING', 'IN_REVIEW', 'RESOLVED', 'CLOSED');
 
--- ==============================
--- MISSING TABLES
--- ==============================
+CREATE TYPE ticket_category AS ENUM ('TECHNICAL', 'BILLING', 'ACCOUNT', 'SERVICE', 'OTHER');
+CREATE TYPE ticket_priority AS ENUM ('LOW', 'MEDIUM', 'HIGH', 'URGENT');
+CREATE TYPE ticket_status AS ENUM ('OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED');
 
--- user_notification_preferences
-CREATE TABLE user_notification_preferences (
-    id BIGSERIAL PRIMARY KEY,
-    user_id BIGINT REFERENCES users(user_id) UNIQUE,
-    email_enabled BOOLEAN DEFAULT TRUE,
-    sms_enabled BOOLEAN DEFAULT FALSE,
-    push_enabled BOOLEAN DEFAULT TRUE,
-    in_app_enabled BOOLEAN DEFAULT TRUE,
-    quiet_hours_start VARCHAR(5),  -- Format: "HH:MM"
-    quiet_hours_end VARCHAR(5),    -- Format: "HH:MM"
-    timezone VARCHAR(50),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+-- Create SystemFeedback table
+CREATE TABLE system_feedback (
+    feedback_id VARCHAR(75) PRIMARY KEY,
+    user_id VARCHAR(75) NOT NULL,
+    category feedback_category NOT NULL,
+    subject VARCHAR(255) NOT NULL,
+    description TEXT NOT NULL,
+    priority feedback_priority DEFAULT 'MEDIUM',
+    status feedback_status DEFAULT 'PENDING',
+    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMP NULL,
+    active BOOLEAN DEFAULT TRUE,
+    
+    FOREIGN KEY (user_id) REFERENCES users(uuid)
 );
 
--- notification_history
-CREATE TABLE notification_history (
-    history_id BIGSERIAL PRIMARY KEY,
-    notification_id BIGINT REFERENCES user_notifications(notification_id),
-    status VARCHAR(20) NOT NULL,  -- SENT, FAILED, READ
-    error_message TEXT,
-    delivery_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    delivery_metadata JSONB
-);
-
--- auth_tokens
-CREATE TABLE auth_tokens (
-    id BIGSERIAL PRIMARY KEY,
-    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
-    access_token TEXT NOT NULL UNIQUE,
-    refresh_token TEXT NOT NULL UNIQUE,
-    expires_at TIMESTAMP,
-    revoked BOOLEAN DEFAULT FALSE,
+-- Create SupportTicket table
+CREATE TABLE support_tickets (
+    ticket_id VARCHAR(75) PRIMARY KEY,
+    user_id VARCHAR(75) NOT NULL,
+    category ticket_category NOT NULL,
+    subject VARCHAR(255) NOT NULL,
+    description TEXT NOT NULL,
+    priority ticket_priority DEFAULT 'MEDIUM',
+    status ticket_status DEFAULT 'OPEN',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_used_at TIMESTAMP,
-    ip_address VARCHAR(100),
-    device_info TEXT
+    resolved_at TIMESTAMP NULL,
+    active BOOLEAN DEFAULT TRUE,
+    
+    FOREIGN KEY (user_id) REFERENCES users(uuid)
 );

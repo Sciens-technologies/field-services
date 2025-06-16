@@ -17,10 +17,12 @@ from db.models import (
 from auth.auth import get_current_user, create_access_token
 from api.schemas import (
     UserCreate, UserResponse, UserUpdate,
-    TokenResponse, LoginRequest, ChangePasswordRequest,NotificationPreferencesUpdate,NotificationChannelPreferences
+    TokenResponse, LoginRequest, ChangePasswordRequest,NotificationPreferencesUpdate,NotificationChannelPreferences,
+    FeedbackCreate, FeedbackResponse, SupportTicketCreate, SupportTicketResponse
 )
 from passlib.hash import bcrypt
-from api.utils.email import send_email
+from api.utils.email import send_email, send_password_reset_email
+from api.services.users import get_user_roles
 
 # Supported notification types
 NOTIFICATION_TYPES = {
@@ -80,22 +82,37 @@ async def login_for_access_token(
         # Find user
         user = db.query(User).filter(User.email == login_data.username).first()
         if not user:
+            print(f"User not found with email: {login_data.username}")
             raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        print(f"Found user: {user.email}")
+        print(f"Stored password hash: {user.password_hash}")
+        print(f"Attempting to verify password...")
         
         # Verify password
         if not pwd_context.verify(login_data.password, user.password_hash):
+            print("Password verification failed")
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
+        print("Password verified successfully")
+        
         if user.status != UserStatus.ACTIVE:
+            print(f"User status is {user.status}")
             raise HTTPException(status_code=401, detail=f"Account is {user.status}")
 
-        # Generate JWT token with 'sub' field
+        # Get user roles
+        user_roles = get_user_roles(db, user.user_id)
+        print(f"User roles: {user_roles}")
+
+        # Generate JWT token
         token_data = {
             "sub": str(user.user_id),  # Required for get_current_user
             "email": user.email,
             "username": user.username,
-            "uuid": user.uuid
+            "roles": user_roles  # Include roles in token
         }
+        
+        print(f"Creating token with data: {token_data}")
         access_token = create_access_token(token_data)
         refresh_token = create_access_token(token_data)
 
@@ -121,7 +138,8 @@ async def login_for_access_token(
             "email": user.email,
             "status": user.status,
             "uuid": user.uuid,
-            "username": user.username
+            "username": user.username,
+            "roles": user_roles  # Include roles in response
         }
     except HTTPException as he:
         raise he
@@ -325,27 +343,22 @@ async def forgot_password(
         user = db.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=404, detail="Email not found")
-        
         # Generate reset token
         reset_token = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(20))
         user.reset_key = reset_token
         user.reset_at = datetime.utcnow()
-        
-        # Send reset email
-        try:
-            send_email(
-                to_email=email,
-                subject="Password Reset Request",
-                content=f"Use this token to reset your password: {reset_token}"
-            )
-        except Exception as e:
-            print(f"Error sending email: {str(e)}")
-        
-        db.commit()
-        
+        db.commit()  # Save token before sending email
+        # Send password reset email with link and instructions
+        email_sent = send_password_reset_email(
+            email=user.email,
+            username=user.username,
+            reset_key=reset_token
+        )
+        if not email_sent:
+            raise HTTPException(status_code=500, detail="Failed to send password reset email. Please try again later.")
         return {
-            "message": "Password reset instructions sent",
-            "reset_token": reset_token  # For development/testing
+            "message": "Password reset instructions sent to your email.",
+            "reset_token": reset_token
         }
     except Exception as e:
         db.rollback()
@@ -438,31 +451,46 @@ async def update_notification_preferences(
     if not prefs:
         prefs = UserNotificationPreferences(user_id=current_user.user_id)
         db.add(prefs)
+    
     # Update channel preferences
     if preferences.email is not None:
-        prefs.email_enabled = preferences.email.enabled
+        prefs.email_enabled = preferences.email
     if preferences.sms is not None:
-        prefs.sms_enabled = preferences.sms.enabled
+        prefs.sms_enabled = preferences.sms
     if preferences.push is not None:
-        prefs.push_enabled = preferences.push.enabled
+        prefs.push_enabled = preferences.push
+    
     prefs.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(prefs)
+    
     return {
         "email": {
-            "enabled": prefs.email_enabled
+            "enabled": prefs.email_enabled,
+            "types": {
+                notification_type: True
+                for notification_type in NOTIFICATION_TYPES["email"]
+            }
         },
         "sms": {
-            "enabled": prefs.sms_enabled
+            "enabled": prefs.sms_enabled,
+            "types": {
+                notification_type: True
+                for notification_type in NOTIFICATION_TYPES["sms"]
+            }
         },
         "push": {
-            "enabled": prefs.push_enabled
+            "enabled": prefs.push_enabled,
+            "types": {
+                notification_type: True
+                for notification_type in NOTIFICATION_TYPES["push"]
+            }
         }
     }
 
-@users_router.post("/feedback/response")
-async def submit_feedback_response(
-    feedback: dict,
+@users_router.post("/feedback", response_model=FeedbackResponse)
+async def submit_feedback(
+    feedback: FeedbackCreate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -470,17 +498,12 @@ async def submit_feedback_response(
     Submit feedback
     Purpose: Allow users to submit system feedback or suggestions
     """
-    required_fields = ["category", "subject", "description"]
-    for field in required_fields:
-        if field not in feedback:
-            raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
-    
     new_feedback = SystemFeedback(
         user_id=current_user.user_id,
-        category=feedback["category"],
-        subject=feedback["subject"],
-        description=feedback["description"],
-        priority=feedback.get("priority", "MEDIUM"),
+        category=feedback.category,
+        subject=feedback.subject,
+        description=feedback.description,
+        priority=feedback.priority,
         status="PENDING"
     )
     db.add(new_feedback)
@@ -489,46 +512,31 @@ async def submit_feedback_response(
         user_id=current_user.user_id,
         actor_id=current_user.user_id,
         action="submit_feedback",
-        details=f"Submitted feedback: {feedback['subject']}",
+        details=f"Submitted feedback: {feedback.subject}",
         timestamp=datetime.utcnow()
     )
     db.add(log)
     db.commit()
+    db.refresh(new_feedback)
     
-    return {
-        "id": new_feedback.feedback_id,
-        "message": "Feedback submitted successfully",
-        "feedback": {
-            "category": new_feedback.category,
-            "subject": new_feedback.subject,
-            "description": new_feedback.description,
-            "priority": new_feedback.priority,
-            "status": new_feedback.status,
-            "submitted_at": new_feedback.submitted_at.isoformat()
-        }
-    }
+    return new_feedback
 
-@users_router.post("/tickets/create")
-async def create_ticket(
-    ticket: dict,
+@users_router.post("/tickets", response_model=SupportTicketResponse)
+async def create_support_ticket(
+    ticket: SupportTicketCreate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Create support ticket
-    Purpose: Allow users to create support tickets for issues or assistance
+    Create a support ticket
+    Purpose: Allow users to create support tickets for various issues
     """
-    required_fields = ["category", "subject", "description"]
-    for field in required_fields:
-        if field not in ticket:
-            raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
-    
     new_ticket = SupportTicket(
         user_id=current_user.user_id,
-        category=ticket["category"],
-        subject=ticket["subject"],
-        description=ticket["description"],
-        priority=ticket.get("priority", "MEDIUM"),
+        category=ticket.category,
+        subject=ticket.subject,
+        description=ticket.description,
+        priority=ticket.priority,
         status="OPEN"
     )
     db.add(new_ticket)
@@ -537,21 +545,11 @@ async def create_ticket(
         user_id=current_user.user_id,
         actor_id=current_user.user_id,
         action="create_ticket",
-        details=f"Created ticket: {ticket['subject']}",
+        details=f"Created support ticket: {ticket.subject}",
         timestamp=datetime.utcnow()
     )
     db.add(log)
     db.commit()
+    db.refresh(new_ticket)
     
-    return {
-        "id": new_ticket.ticket_id,
-        "message": "Support ticket created successfully",
-        "ticket": {
-            "category": new_ticket.category,
-            "subject": new_ticket.subject,
-            "description": new_ticket.description,
-            "priority": new_ticket.priority,
-            "status": new_ticket.status,
-            "created_at": new_ticket.created_at.isoformat()
-        }
-    }
+    return new_ticket

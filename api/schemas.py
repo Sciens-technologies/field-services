@@ -78,16 +78,59 @@ class NotificationChannelPreferences(BaseModel):
     types: Optional[Dict[str, bool]] = None
 
 class NotificationPreferencesUpdate(BaseModel):
-    email: Optional[NotificationChannelPreferences] = None
-    sms: Optional[NotificationChannelPreferences] = None
-    push: Optional[NotificationChannelPreferences] = None
-class NotificationChannelPreferences(BaseModel):
-    enabled: Optional[bool] = True
+    """
+    Schema for updating user notification preferences.
+    
+    Attributes:
+        email (Optional[bool]): Whether to enable/disable email notifications
+        sms (Optional[bool]): Whether to enable/disable SMS notifications
+        push (Optional[bool]): Whether to enable/disable push notifications
+    """
+    email: Optional[bool] = None
+    sms: Optional[bool] = None
+    push: Optional[bool] = None
 
-class NotificationPreferencesUpdate(BaseModel):
-    email: Optional[NotificationChannelPreferences] = None
-    sms: Optional[NotificationChannelPreferences] = None
-    push: Optional[NotificationChannelPreferences] = None
+class NotificationPreferencesResponse(BaseModel):
+    """
+    Schema for user notification preferences response.
+    
+    Attributes:
+        email (dict): Email notification preferences
+        sms (dict): SMS notification preferences
+        push (dict): Push notification preferences
+    """
+    email: dict
+    sms: dict
+    push: dict
+
+class NotificationPreferencesUpdateFull(BaseModel):
+    """
+    Schema for updating detailed user notification preferences.
+    
+    Attributes:
+        email_notifications (Optional[Dict[str, bool]]): Email notification type preferences
+        sms_notifications (Optional[Dict[str, bool]]): SMS notification type preferences
+        push_notifications (Optional[Dict[str, bool]]): Push notification type preferences
+    """
+    email_notifications: Optional[Dict[str, bool]] = None
+    sms_notifications: Optional[Dict[str, bool]] = None
+    push_notifications: Optional[Dict[str, bool]] = None
+
+class NotificationPreferencesResponseFull(BaseModel):
+    """
+    Schema for detailed user notification preferences response.
+    
+    Attributes:
+        user_id (int): User's ID
+        email_notifications (Dict[str, bool]): Email notification type preferences
+        sms_notifications (Dict[str, bool]): SMS notification type preferences
+        push_notifications (Dict[str, bool]): Push notification type preferences
+    """
+    user_id: int
+    email_notifications: Dict[str, bool]
+    sms_notifications: Dict[str, bool]
+    push_notifications: Dict[str, bool]
+
 # --- User Schemas ---
 class UserBase(BaseSchema):
     """
@@ -117,13 +160,12 @@ class UserBase(BaseSchema):
 class UserCreate(UserBase):
     """
     Schema for creating a new user.
-    
-    Attributes:
-        password (str): User's password (minimum 8 characters)
-        created_by (str): Identifier of who created the user
+    Password will be sent via email and created_by will be set automatically.
     """
-    password: str = Field(..., min_length=8, description="User's password (minimum 8 characters)")
-    created_by: str = Field(..., description="Identifier of who created the user")
+    roles: List[str] = Field(
+        default=[],
+        description="List of role names to assign to the user (e.g., ['admin', 'user'])"
+    )
 
     class Config:
         schema_extra = {
@@ -132,8 +174,7 @@ class UserCreate(UserBase):
                 "email": "john.doe@example.com",
                 "first_name": "John",
                 "last_name": "Doe",
-                "password": "securepassword123",
-                "created_by": "SELF_SIGNUP"
+                "roles": ["user"]
             }
         }
 
@@ -147,8 +188,7 @@ class UserResponse(UserBase):
     Schema for user response data.
     
     Attributes:
-        user_id (int): Unique identifier for the user
-        uuid (Optional[str]): UUID for the user
+        uuid (str): UUID for the user
         status (UserStatus): Current status of the user account
         activated (bool): Whether the account is activated
         created_at (datetime): When the account was created
@@ -156,8 +196,7 @@ class UserResponse(UserBase):
         last_login (Optional[datetime]): When the user last logged in
         last_login_ip (Optional[str]): IP address of last login
     """
-    user_id: int = Field(..., description="Unique identifier for the user")
-    uuid: Optional[str] = Field(None, description="UUID for the user")
+    uuid: str = Field(..., description="UUID for the user")
     status: UserStatus = Field(..., description="Current status of the user account")
     activated: bool = Field(..., description="Whether the account is activated")
     created_at: datetime = Field(..., description="When the account was created")
@@ -168,12 +207,11 @@ class UserResponse(UserBase):
     class Config:
         schema_extra = {
             "example": {
-                "user_id": 1,
+                "uuid": "550e8400-e29b-41d4-a716-446655440000",
                 "username": "johndoe",
                 "email": "john.doe@example.com",
                 "first_name": "John",
                 "last_name": "Doe",
-                "uuid": "550e8400-e29b-41d4-a716-446655440000",
                 "status": "ACTIVE",
                 "activated": True,
                 "created_at": "2024-03-20T10:00:00Z",
@@ -183,45 +221,41 @@ class UserResponse(UserBase):
             }
         }
 
-class AdminCreateUserRequest(BaseSchema):
-    """
-    Schema for admin to create a new user.
-    
-    Attributes:
-        username (str): Unique username for the user
-        email (EmailStr): User's email address
-        first_name (str): User's first name
-        last_name (str): User's last name
-        password (Optional[str]): User's password (if not provided, will be generated)
-        roles (List[str]): List of role names to assign to the user
-    """
-    username: str
-    email: EmailStr
-    first_name: str
-    last_name: str
-    password: Optional[str] = None
-    roles: List[str] = []
-
 # --- Role Schemas ---
-class RoleBase(BaseSchema):
-    role_name: str
-    description: Optional[str] = None
+class PermissionBase(BaseModel):
+    feature_name: str = Field(..., description="The feature name for the permission")
+    description: Optional[str] = Field(None, description="Description of the permission")
+
+class PermissionCreate(PermissionBase):
+    pass
+
+class PermissionResponse(PermissionBase):
+    id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class RoleBase(BaseModel):
+    name: str = Field(..., description="Name of the role")
+    description: Optional[str] = Field(None, description="Description of the role")
 
 class RoleCreate(RoleBase):
-    created_by: str
+    permission_ids: Optional[List[int]] = Field(None, description="List of permission IDs to assign")
 
-class RoleUpdate(BaseSchema):
-    role_name: Optional[str] = None
-    description: Optional[str] = None
-    status: Optional[str] = None
-    active: Optional[bool] = None
+class RoleUpdate(RoleBase):
+    pass
 
 class RoleResponse(RoleBase):
-    role_id: int
-    status: Optional[str] = None
-    active: bool
-    created_at: datetime
-    updated_at: Optional[datetime] = None
+    id: int
+    permissions: List[PermissionResponse]
+
+    class Config:
+        from_attributes = True
+
+class PermissionAssignment(BaseModel):
+    add_permission_ids: Optional[List[int]] = Field(None, description="List of permission IDs to add")
+    remove_permission_ids: Optional[List[int]] = Field(None, description="List of permission IDs to remove")
 
 # --- Device Schemas ---
 class DeviceBase(BaseSchema):
@@ -554,30 +588,73 @@ class WorkCenterAssignmentResponse(BaseModel):
     message: str
 
 # --- Feedback/Support Schemas ---
-class FeedbackRequest(BaseModel):
-    request_id: str
-    subject: str
-    description: str
+class FeedbackCategory(str, Enum):
+    BUG = "BUG"
+    FEATURE_REQUEST = "FEATURE_REQUEST"
+    GENERAL = "GENERAL"
+
+class FeedbackPriority(str, Enum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
 
 class FeedbackCreate(BaseModel):
-    email: Optional[EmailStr] = None
-    subject: str
-    message: str
+    category: FeedbackCategory
+    subject: str = Field(..., min_length=1, max_length=255)
+    description: str = Field(..., min_length=1)
+    priority: Optional[FeedbackPriority] = FeedbackPriority.MEDIUM
 
 class FeedbackResponse(BaseModel):
-    id: int
+    feedback_id: int
+    category: str
     subject: str
-    message: str
+    description: str
+    priority: str
     status: str
-    created_at: datetime
+    submitted_at: datetime
+    resolved_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
 
+class TicketCategory(str, Enum):
+    TECHNICAL = "TECHNICAL"
+    ACCOUNT = "ACCOUNT"
+    BILLING = "BILLING"
+    OTHER = "OTHER"
+
+class TicketPriority(str, Enum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    URGENT = "URGENT"
+
+class TicketStatus(str, Enum):
+    OPEN = "OPEN"
+    IN_PROGRESS = "IN_PROGRESS"
+    ON_HOLD = "ON_HOLD"
+    RESOLVED = "RESOLVED"
+    CLOSED = "CLOSED"
+
 class SupportTicketCreate(BaseModel):
+    category: TicketCategory
+    subject: str = Field(..., min_length=1, max_length=255)
+    description: str = Field(..., min_length=1)
+    priority: Optional[TicketPriority] = TicketPriority.MEDIUM
+
+class SupportTicketResponse(BaseModel):
+    ticket_id: int
+    category: str
     subject: str
     description: str
-    ticket_type: Optional[str] = "technical"
+    priority: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
 
 # --- Notification Preferences Schemas ---
 class NotificationPreferencesResponse(BaseModel):
@@ -651,13 +728,23 @@ class ResetPasswordRequest(BaseSchema):
     new_password: str
 
 # --- Permissions ---
-class PermissionAssignRequest(BaseModel):
-    role_name: str = Field(..., example="admin")
-    permissions: List[str] = Field(..., example=["create", "delete", "view"])
+class PermissionBase(BaseSchema):
+    feature_name: str = Field(..., description="The feature name for the permission")
+    description: Optional[str] = Field(None, description="Description of the permission")
 
-class PermissionCreateRequest(BaseModel):
+class PermissionCreateRequest(BaseSchema):
     name: str
     description: str = ""
+
+class PermissionResponse(PermissionBase):
+    permission_id: int
+    active: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+class PermissionAssignRequest(BaseSchema):
+    role_name: str = Field(..., example="admin")
+    permissions: List[str] = Field(..., example=["create", "delete", "view"])
 
 # --- User Login Response ---
 class UserLoginResponse(BaseModel):
