@@ -5,8 +5,8 @@ import datetime
 import secrets
 import string
 from datetime import date as dt
-
-from db.models import User, Role, UserActivityLog, NotificationHistory,WorkCenter
+from db.models import WorkCentre
+from db.models import User, Role, UserActivityLog, NotificationHistory
 from db.database import get_db
 from api.services.users import get_current_user, get_user_by_email
 from api.schemas import UserResponse, AdminCreateUserRequest
@@ -302,7 +302,7 @@ async def assign_work_center(
         user = db.query(User).filter(User.email == request.email).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        work_center = db.query(WorkCenter).filter(WorkCenter.id == request.work_center_id).first()
+        work_center = db.query(WorkCentre).filter(WorkCentre.id == request.work_center_id).first()
         if not work_center:
             raise HTTPException(status_code=404, detail="Work center not found")
         user.work_center_id = request.work_center_id
@@ -455,7 +455,7 @@ async def assign_work_center(
         user = db.query(User).filter(User.email == request.email).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        work_center = db.query(WorkCenter).filter(WorkCenter.id == request.work_center_id).first()
+        work_center = db.query(WorkCentre).filter(WorkCentre.id == request.work_center_id).first()
         if not work_center:
             raise HTTPException(status_code=404, detail="Work center not found")
         user.work_center_id = request.work_center_id

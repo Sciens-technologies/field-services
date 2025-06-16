@@ -1,6 +1,7 @@
 from fastapi import Depends, FastAPI, HTTPException, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, EmailStr
+from api.schemas import DeviceResponse
 
 from passlib.hash import bcrypt  # For password hashing
 import jwt  # PyJWT for token-based authentication
@@ -120,3 +121,4 @@ def log_notification(db, user_id: int, notif_type: str, event: str, message: str
 def generate_random_password(length=12):
     alphabet = string.ascii_letters + string.digits
     return ''.join(secrets.choice(alphabet) for _ in range(length))
+

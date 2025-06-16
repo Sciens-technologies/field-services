@@ -140,25 +140,20 @@ def send_email(
         logger.error(f"Error sending email to {to_email}: {e}")
         return False
 
-def send_welcome_email(email: str, password: str, first_name: str, last_name: str = "") -> bool:
+def send_welcome_email(email: str, username: str, first_name: str) -> bool:
     """
-    Sends a welcome email to a new user with their login credentials.
+    Sends a welcome email to a new user.
     Returns True if successful, False otherwise.
     """
-    subject = "Welcome to Field Service App - Your Account Details"
+    subject = "Welcome to Field Service App"
     
     # Create plain text email body
-    body = f"""Hello {first_name} {last_name},
+    body = f"""Hello {first_name},
 
 Welcome to Field Service App! Your account has been created.
 
-Here are your login details:
-Email: {email}
-Password: {password}
-
-Please log in at: https://yourapp.example.com/login
-
-For security reasons, we recommend changing your password after your first login.
+You can log in with your username: {username}
+Login URL: https://yourapp.example.com/login
 
 If you have any questions, please contact support.
 
@@ -166,7 +161,7 @@ Best regards,
 The Field Service App Team
 """
 
-    # Create HTML email body - simplified design
+    # Create HTML email body
     html_content = f"""
 <!DOCTYPE html>
 <html>
@@ -176,54 +171,48 @@ The Field Service App Team
     </div>
     
     <div style="padding: 20px; border: 1px solid #ddd;">
-        <p>Hello {first_name} {last_name},</p>
-        <p>Your account has been created. Here are your login details:</p>
+        <p>Hello {first_name},</p>
+        <p>Your account has been created successfully.</p>
         
         <div style="background-color: #f5f5f5; padding: 15px; margin: 15px 0; border-left: 4px solid #4a90e2;">
-            <p><strong>Email:</strong> {email}</p>
-            <p><strong>Password:</strong> {password}</p>
+            <p><strong>Username:</strong> {username}</p>
             <p><strong>Login URL:</strong> <a href="https://yourapp.example.com/login">https://yourapp.example.com/login</a></p>
         </div>
         
-        <p>For security reasons, we recommend changing your password after your first login.</p>
         <p>If you have any questions, please contact support.</p>
         
         <p>Best regards,<br>The Field Service App Team</p>
-    </div>
-    
-    <div style="font-size: 12px; color: #777; margin-top: 20px; text-align: center;">
-        <p>This is an automated message, please do not reply to this email.</p>
     </div>
 </body>
 </html>
 """
     
-    # Send the email using our local send_email function with ignore_preferences=True for welcome emails
-    return send_email(email, subject, body, html_content, ignore_preferences=True)
+    return send_email(email, subject, body, html_content)
 
-def send_password_reset_email(to_email: str, reset_token: str, first_name: str, reset_link: str) -> bool:
+def send_password_reset_email(email: str, username: str, reset_key: str) -> bool:
     """
-    Sends a password reset email with a reset link.
+    Sends a password reset email to the user.
+    Returns True if successful, False otherwise.
     """
+    reset_link = f"https://yourapp.example.com/reset-password?key={reset_key}"
     subject = "Password Reset Request - Field Service App"
     
-    # Plain text version
-    body = f"""Hello {first_name},
+    # Create plain text email body
+    body = f"""Hello {username},
 
 We received a request to reset your password for the Field Service App.
 
-Click here to reset your password: {reset_link}
-
-This link will expire in 24 hours.
+To reset your password, click on the following link:
+{reset_link}
 
 If you did not request a password reset, please ignore this email.
 
-Thank you,
-The Field Service Team
+Best regards,
+The Field Service App Team
 """
 
-    # HTML version - very simple with just a clear link
-    html = f"""
+    # Create HTML email body
+    html_content = f"""
 <!DOCTYPE html>
 <html>
 <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -232,86 +221,68 @@ The Field Service Team
     </div>
     
     <div style="padding: 20px; border: 1px solid #ddd;">
-        <p>Hello {first_name},</p>
+        <p>Hello {username},</p>
         <p>We received a request to reset your password for the Field Service App.</p>
         
-        <p style="text-align: center; margin: 30px 0;">
-            <a href="{reset_link}" style="background-color: #4a90e2; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">Click here to reset your password</a>
-        </p>
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{reset_link}" style="background-color: #4a90e2; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
+                Reset Your Password
+            </a>
+        </div>
         
-        <p>This link will expire in 24 hours.</p>
         <p>If you did not request a password reset, please ignore this email.</p>
         
-        <p>Thank you,<br>The Field Service Team</p>
+        <p>Best regards,<br>The Field Service App Team</p>
     </div>
 </body>
 </html>
 """
     
-    # Send the email with ignore_preferences=True for password reset emails
-    return send_email(to_email, subject, body, html, ignore_preferences=True)
+    return send_email(email, subject, body, html_content)
 
-def send_temporary_password_email(user_data, generated_password) -> bool:
+def send_temporary_password_email(email: str, username: str, temp_password: str) -> bool:
     """
-    Sends an email with the temporary password to the user.
+    Sends an email with a temporary password to the user.
+    Returns True if successful, False otherwise.
     """
-    subject = "Your Field Service App Account Password"
-    message = f"""Hello {user_data.first_name},
+    subject = "Your Temporary Password - Field Service App"
+    
+    # Create plain text email body
+    body = f"""Hello {username},
 
-Your account has been created. Your temporary password is: {generated_password}
+A temporary password has been generated for your Field Service App account.
 
-Please log in and change your password.
+Your temporary password is: {temp_password}
+
+Please log in and change your password immediately.
 
 Best regards,
-The Field Service Team"""
-    
+The Field Service App Team
+"""
+
+    # Create HTML email body
     html_content = f"""
 <!DOCTYPE html>
 <html>
 <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
     <div style="background-color: #4a90e2; color: white; padding: 15px; text-align: center;">
-        <h2>Your Field Service App Account</h2>
+        <h2>Temporary Password</h2>
     </div>
     
     <div style="padding: 20px; border: 1px solid #ddd;">
-        <p>Hello {user_data.first_name},</p>
-        <p>Your account has been created.</p>
+        <p>Hello {username},</p>
+        <p>A temporary password has been generated for your Field Service App account.</p>
         
         <div style="background-color: #f5f5f5; padding: 15px; margin: 15px 0; border-left: 4px solid #4a90e2;">
-            <p><strong>Temporary Password:</strong> {generated_password}</p>
+            <p><strong>Temporary Password:</strong> {temp_password}</p>
         </div>
         
-        <p>Please log in and change your password.</p>
+        <p>Please log in and change your password immediately.</p>
         
-        <p>Best regards,<br>The Field Service Team</p>
+        <p>Best regards,<br>The Field Service App Team</p>
     </div>
 </body>
 </html>
 """
     
-    # Send the email with ignore_preferences=True for temporary password emails
-    return send_email(
-        to_email=user_data.email,
-        subject=subject,
-        plain_text=message,
-        html_content=html_content,
-        ignore_preferences=True  # Always send temporary password emails
-    )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    return send_email(email, subject, body, html_content)

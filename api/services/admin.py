@@ -23,4 +23,3 @@ def block_user(user_id: int, db: Session):
     user.status = "blocked"
     db.commit()
     return {"detail": "User blocked"}
-
