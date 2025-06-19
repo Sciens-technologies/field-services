@@ -5,7 +5,7 @@ from sqlalchemy import pool
 
 from alembic import context
 from db.database import Base
-from db.models import User, Role, Permission, Token, Device, WorkOrder, WorkOrderComment, WorkOrderForm, WorkOrderStatusHistory, LoginActivity, Notification
+from db.models import *  # Import all models
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

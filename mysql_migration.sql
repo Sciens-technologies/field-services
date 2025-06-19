@@ -1,9 +1,67 @@
+-- MySQL Migration Script
 
--- users and profile module tables 
+-- First, disable foreign key checks for the session
+SET FOREIGN_KEY_CHECKS = 0;
 
--- ==============================
--- USERS TABLE
--- ==============================
+-- Drop all existing tables in reverse order of dependencies
+DROP TABLE IF EXISTS work_centre_subcontractors;
+DROP TABLE IF EXISTS subcontractor_companies;
+
+DROP TABLE IF EXISTS picture_quality_metrics;
+DROP TABLE IF EXISTS picture_download_log;
+DROP TABLE IF EXISTS picture_annotation;
+DROP TABLE IF EXISTS ocr_techniques;
+DROP TABLE IF EXISTS picture_qualification;
+DROP TABLE IF EXISTS picture_metadata;
+
+DROP TABLE IF EXISTS offline_capture_queue;
+DROP TABLE IF EXISTS data_capture_validation_logs;
+DROP TABLE IF EXISTS other_request_capture;
+DROP TABLE IF EXISTS termination_capture;
+DROP TABLE IF EXISTS complaint_capture;
+DROP TABLE IF EXISTS subscription_capture;
+DROP TABLE IF EXISTS new_connection_capture;
+DROP TABLE IF EXISTS work_order_data_capture;
+
+DROP TABLE IF EXISTS work_order_reassign;
+DROP TABLE IF EXISTS work_order_feedback;
+DROP TABLE IF EXISTS work_order_attachments;
+DROP TABLE IF EXISTS work_order_status_logs;
+DROP TABLE IF EXISTS work_order_notes;
+DROP TABLE IF EXISTS work_order_acknowledgments;
+DROP TABLE IF EXISTS work_order_execution_anomalies;
+DROP TABLE IF EXISTS work_order_execution;
+DROP TABLE IF EXISTS anomalies;
+DROP TABLE IF EXISTS work_order_assignments;
+DROP TABLE IF EXISTS work_orders;
+DROP TABLE IF EXISTS work_centres;
+
+DROP TABLE IF EXISTS resource_requests;
+DROP TABLE IF EXISTS resource_types;
+DROP TABLE IF EXISTS resource_request_modules;
+
+DROP TABLE IF EXISTS device_health_logs;
+DROP TABLE IF EXISTS device_status_audit;
+DROP TABLE IF EXISTS device_registration_confirmations;
+DROP TABLE IF EXISTS device_assignments;
+DROP TABLE IF EXISTS device_artifacts;
+DROP TABLE IF EXISTS devices;
+
+DROP TABLE IF EXISTS user_auth_metadata;
+DROP TABLE IF EXISTS user_auth_providers;
+DROP TABLE IF EXISTS user_notifications;
+DROP TABLE IF EXISTS artifact_notification_events;
+DROP TABLE IF EXISTS notification_templates;
+DROP TABLE IF EXISTS user_status_audit;
+DROP TABLE IF EXISTS role_permissions;
+DROP TABLE IF EXISTS permissions;
+DROP TABLE IF EXISTS user_roles;
+DROP TABLE IF EXISTS roles;
+DROP TABLE IF EXISTS users;
+
+-- Create base tables
+
+-- Users Table
 CREATE TABLE users (
     user_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     uuid VARCHAR(75) UNIQUE,
@@ -37,15 +95,11 @@ CREATE TABLE users (
     last_modified_by VARCHAR(50),
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     
-      
     UNIQUE KEY ux_users_username (username),
     UNIQUE KEY ux_users_email (email)
 );
 
-
--- ==============================
--- ROLES TABLE
--- ==============================
+-- Roles Table
 CREATE TABLE roles (
     role_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     role_name VARCHAR(100) NOT NULL UNIQUE,
@@ -58,10 +112,7 @@ CREATE TABLE roles (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
-
--- ==============================
--- user_roles TABLE
--- ==============================
+-- User Roles Table
 CREATE TABLE user_roles (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     role_id BIGINT NOT NULL,
@@ -75,9 +126,7 @@ CREATE TABLE user_roles (
     CONSTRAINT fk_users FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 
--- ==============================
--- PERMISSIONS
--- ==============================
+-- Permissions Table
 CREATE TABLE permissions (
     permission_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     feature VARCHAR(100) NOT NULL,
@@ -90,6 +139,7 @@ CREATE TABLE permissions (
     active TINYINT(1) NULL DEFAULT '1'
 );
 
+-- Role Permissions Table
 CREATE TABLE role_permissions (
     role_id BIGINT,
     permission_id BIGINT,
@@ -105,6 +155,7 @@ CREATE TABLE role_permissions (
     FOREIGN KEY (permission_id) REFERENCES permissions(permission_id)
 );
 
+-- User Status Audit Table
 CREATE TABLE user_status_audit (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     user_id BIGINT NOT NULL,
@@ -118,74 +169,64 @@ CREATE TABLE user_status_audit (
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
--- ==============================
--- LOGS & NOTIFICATIONS
--- ==============================
-CREATE TABLE `notification_templates` (
-  `template_id` bigint NOT NULL AUTO_INCREMENT,
-  `name` varchar(100) NOT NULL,
-  `template_key` varchar(50) NOT NULL,
-  `subject` varchar(255) NOT NULL,
-  `content` text NOT NULL,
-  `notification_type` enum('EMAIL','SMS','PUSH','IN_APP') NOT NULL,
-  `active` tinyint(1) DEFAULT '1',
-  	status VARCHAR(75) NULL DEFAULT NULL,
-   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`template_id`),
-  UNIQUE KEY `template_key` (`template_key`)
+-- Notification Templates Table
+CREATE TABLE notification_templates (
+    template_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    name VARCHAR(100) NOT NULL,
+    template_key VARCHAR(50) NOT NULL UNIQUE,
+    subject VARCHAR(255) NOT NULL,
+    content TEXT NOT NULL,
+    notification_type ENUM('EMAIL','SMS','PUSH','IN_APP') NOT NULL,
+    active TINYINT(1) DEFAULT '1',
+    status VARCHAR(75) NULL DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- artifact_notification_events
-CREATE TABLE `artifact_notification_events` (
-  `event_id` BIGINT NOT NULL AUTO_INCREMENT,
-  `template_id` BIGINT NOT NULL,
-  `initiated_by` BIGINT NULL, -- user/admin/system who triggered it
-  `notification_scope` ENUM('INDIVIDUAL', 'GROUP', 'SERVICETYPE') NOT NULL DEFAULT 'INDIVIDUAL',
-  `target_type` ENUM('USER', 'ROLE', 'SEGMENT') NULL, -- Optional
-  `target_value` VARCHAR(255) NULL, -- JSON or comma-separated target IDs if GROUP
-  `custom_metadata` JSON DEFAULT NULL,
-  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`event_id`),
-  FOREIGN KEY (`template_id`) REFERENCES `notification_templates` (`template_id`),
-  FOREIGN KEY (`initiated_by`) REFERENCES `users` (`user_id`)
+-- Artifact Notification Events Table
+CREATE TABLE artifact_notification_events (
+    event_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    template_id BIGINT NOT NULL,
+    initiated_by BIGINT NULL, -- user/admin/system who triggered it
+    notification_scope ENUM('INDIVIDUAL', 'GROUP', 'SERVICETYPE') NOT NULL DEFAULT 'INDIVIDUAL',
+    target_type ENUM('USER', 'ROLE', 'SEGMENT') NULL, -- Optional
+    target_value VARCHAR(255) NULL, -- JSON or comma-separated target IDs if GROUP
+    custom_metadata JSON DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (template_id) REFERENCES notification_templates(template_id),
+    FOREIGN KEY (initiated_by) REFERENCES users(user_id)
 );
 
--- user_notifications
-CREATE TABLE `user_notifications` (
-  `notification_id` BIGINT NOT NULL AUTO_INCREMENT,
-  -- Either direct user_id or group-based delivery
-  `user_id` BIGINT NULL, -- for direct notification
-  `target_type` ENUM('ROLE', 'SEGMENT', 'GROUP') NULL, -- for group-based
-  `target_value` VARCHAR(255) NULL, -- e.g., 'FIELD_AGENT', 'ZONE_1', etc.
+-- User Notifications Table
+CREATE TABLE user_notifications (
+    notification_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    -- Either direct user_id or group-based delivery
+    user_id BIGINT NULL, -- for direct notification
+    target_type ENUM('ROLE', 'SEGMENT', 'GROUP') NULL, -- for group-based
+    target_value VARCHAR(255) NULL, -- e.g., 'FIELD_AGENT', 'ZONE_1', etc.
 
-  `template_id` BIGINT DEFAULT NULL,
-  `title` VARCHAR(255) NOT NULL,
-  `message` TEXT NOT NULL,
-  `status` ENUM('PENDING','SENT','FAILED','READ') DEFAULT 'PENDING',
-  `metadata` JSON DEFAULT NULL,
-  `created_at` TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
-  `sent_at` DATETIME DEFAULT NULL,
-  `read_at` DATETIME DEFAULT NULL,
+    template_id BIGINT DEFAULT NULL,
+    title VARCHAR(255) NOT NULL,
+    message TEXT NOT NULL,
+    status ENUM('PENDING','SENT','FAILED','READ') DEFAULT 'PENDING',
+    metadata JSON DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    sent_at DATETIME DEFAULT NULL,
+    read_at DATETIME DEFAULT NULL,
 
-  PRIMARY KEY (`notification_id`),
-  KEY `user_id` (`user_id`),
-  KEY `template_id` (`template_id`),
+    KEY user_id (user_id),
+    KEY template_id (template_id),
 
-  CONSTRAINT `user_notifications_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`user_id`),
-  CONSTRAINT `user_notifications_ibfk_2` FOREIGN KEY (`template_id`) REFERENCES `notification_templates` (`template_id`),
+    CONSTRAINT user_notifications_ibfk_1 FOREIGN KEY (user_id) REFERENCES users(user_id),
+    CONSTRAINT user_notifications_ibfk_2 FOREIGN KEY (template_id) REFERENCES notification_templates(template_id),
 
-  -- XOR logic: either user_id OR (target_type + target_value)
-  CHECK (
-    (user_id IS NOT NULL AND target_type IS NULL AND target_value IS NULL) OR
-    (user_id IS NULL AND target_type IS NOT NULL AND target_value IS NOT NULL)
-  )
+    -- XOR logic: either user_id OR (target_type + target_value)
+    CHECK (
+        (user_id IS NOT NULL AND target_type IS NULL AND target_value IS NULL) OR
+        (user_id IS NULL AND target_type IS NOT NULL AND target_value IS NOT NULL)
+    )
 );
 
-
-
--- ==============================
--- AUTHENTICATION SUPPORT
--- ==============================
+-- User Auth Providers Table
 CREATE TABLE user_auth_providers (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     user_id BIGINT NOT NULL,
@@ -200,6 +241,7 @@ CREATE TABLE user_auth_providers (
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
+-- User Auth Metadata Table
 CREATE TABLE user_auth_metadata (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     user_id BIGINT NOT NULL,
@@ -212,13 +254,38 @@ CREATE TABLE user_auth_metadata (
     FOREIGN KEY (user_id) REFERENCES users(user_id)
 );
 
+-- Work Centres Table
+CREATE TABLE work_centres (
+    work_centre_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    name VARCHAR(255) NOT NULL,
+    registration_number VARCHAR(100) UNIQUE,
+    tax_id VARCHAR(100) NULL,
+    
+    contact_email VARCHAR(150) NULL,
+    contact_phone VARCHAR(50) NULL,
+    website_url VARCHAR(255) NULL,
+    
+    address_line1 VARCHAR(255) NULL,
+    address_line2 VARCHAR(255) NULL,
+    city VARCHAR(100) NULL,
+    state VARCHAR(100) NULL,
+    postal_code VARCHAR(20) NULL,
+    country VARCHAR(100) NULL,
 
--- DEVICE MANAGEMENT module tables 
+    status VARCHAR(75) DEFAULT 'ACTIVE',   -- or use ENUM if statuses are fixed
+    active TINYINT(1) DEFAULT 1,
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    created_by BIGINT NULL,
+    updated_by BIGINT NULL,
+    
+    FOREIGN KEY (created_by) REFERENCES users(user_id),
+    FOREIGN KEY (updated_by) REFERENCES users(user_id)
+);
 
--- ==============================
--- DEVICE MANAGEMENT
--- ==============================
--- device
+-- Devices Table
 CREATE TABLE devices (
     device_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     serial_number VARCHAR(100) UNIQUE,
@@ -234,8 +301,7 @@ CREATE TABLE devices (
     FOREIGN KEY (work_center_id) REFERENCES work_centres(work_centre_id)
 );
 
-
--- device_artifacts
+-- Device Artifacts Table
 CREATE TABLE device_artifacts (
     artifact_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     device_id BIGINT NOT NULL,
@@ -267,9 +333,7 @@ CREATE TABLE device_artifacts (
     FOREIGN KEY (added_by) REFERENCES users(user_id)
 );
 
-
-
--- device_assignments
+-- Device Assignments Table
 CREATE TABLE device_assignments (
     assignment_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     device_id BIGINT NOT NULL,
@@ -316,7 +380,7 @@ CREATE TABLE device_assignments (
     )
 );
 
--- device_registration_confirmations
+-- Device Registration Confirmations Table
 CREATE TABLE device_registration_confirmations (
     confirmation_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     device_id BIGINT,
@@ -327,10 +391,9 @@ CREATE TABLE device_registration_confirmations (
     
     FOREIGN KEY (device_id) REFERENCES devices(device_id),
     FOREIGN KEY (functional_admin_id) REFERENCES users(user_id)
-
 );
 
--- device_status_audit
+-- Device Status Audit Table
 CREATE TABLE device_status_audit (
     audit_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     device_id BIGINT,
@@ -346,7 +409,7 @@ CREATE TABLE device_status_audit (
     FOREIGN KEY (changed_by_user_id) REFERENCES users(user_id)
 );
 
--- device_health_logs
+-- Device Health Logs Table
 CREATE TABLE device_health_logs (
     health_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     device_id BIGINT,
@@ -364,9 +427,7 @@ CREATE TABLE device_health_logs (
     FOREIGN KEY (logged_by) REFERENCES users(user_id)
 );
 
-
-
-
+-- Resource Request Modules Table
 CREATE TABLE resource_request_modules (
     module_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     module_key VARCHAR(50) NOT NULL UNIQUE, -- e.g., 'DEVICE', 'WORK_ORDER'
@@ -377,6 +438,7 @@ CREATE TABLE resource_request_modules (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
+-- Resource Types Table
 CREATE TABLE resource_types (
     resource_type_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     type_key VARCHAR(50) NOT NULL UNIQUE, -- e.g., 'MATERIAL', 'TOOL'
@@ -387,6 +449,7 @@ CREATE TABLE resource_types (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
+-- Resource Requests Table
 CREATE TABLE resource_requests (
     request_id BIGINT PRIMARY KEY AUTO_INCREMENT,
 
@@ -410,40 +473,7 @@ CREATE TABLE resource_requests (
     FOREIGN KEY (requested_by) REFERENCES users(user_id)
 );
 
--- work order module tables 
--- already this tables hirarchy have in eneo side for your understing purpose we creating this tables 
--- 1. work_centres I need to improve 
-CREATE TABLE work_centres (
-    work_centre_id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    name VARCHAR(255) NOT NULL,
-    registration_number VARCHAR(100) UNIQUE,
-    tax_id VARCHAR(100) NULL,
-    
-    contact_email VARCHAR(150) NULL,
-    contact_phone VARCHAR(50) NULL,
-    website_url VARCHAR(255) NULL,
-    
-    address_line1 VARCHAR(255) NULL,
-    address_line2 VARCHAR(255) NULL,
-    city VARCHAR(100) NULL,
-    state VARCHAR(100) NULL,
-    postal_code VARCHAR(20) NULL,
-    country VARCHAR(100) NULL,
-
-    status VARCHAR(75) DEFAULT 'ACTIVE',   -- or use ENUM if statuses are fixed
-    active TINYINT(1) DEFAULT 1,
-    
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    
-    created_by BIGINT NULL,
-    updated_by BIGINT NULL,
-    
-    FOREIGN KEY (created_by) REFERENCES users(user_id),
-    FOREIGN KEY (updated_by) REFERENCES users(user_id)
-);
-
--- 2. work_orders
+-- Work Orders Table
 CREATE TABLE work_orders (
     work_order_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     wo_number VARCHAR(100) UNIQUE NOT NULL,
@@ -460,16 +490,16 @@ CREATE TABLE work_orders (
     priority ENUM('LOW', 'MEDIUM', 'HIGH', 'URGENT') DEFAULT 'MEDIUM',
     status ENUM('PENDING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'REJECTED') DEFAULT 'PENDING',
     created_by BIGINT,
-    work_centre_id BIGINT, -- NEW
+    work_centre_id BIGINT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-	 active TINYINT(1) NULL DEFAULT '1',
-	 
+    active TINYINT(1) NULL DEFAULT '1',
+    
     FOREIGN KEY (created_by) REFERENCES users(user_id),
-    FOREIGN KEY (work_centre_id) REFERENCES work_centres(work_centre_id) -- NEW
+    FOREIGN KEY (work_centre_id) REFERENCES work_centres(work_centre_id)
 );
 
--- 3. work_order_assignments
+-- Work Order Assignments Table
 CREATE TABLE work_order_assignments (
     assignment_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     work_order_id BIGINT NOT NULL,
@@ -486,8 +516,7 @@ CREATE TABLE work_order_assignments (
     FOREIGN KEY (assigned_by) REFERENCES users(user_id)
 );
 
--- 4. anomalies (Master Table)
-
+-- Anomalies Table
 CREATE TABLE anomalies (
     anomaly_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     name VARCHAR(100) NOT NULL UNIQUE,
@@ -495,7 +524,8 @@ CREATE TABLE anomalies (
     status VARCHAR(75) NULL DEFAULT NULL,
     active TINYINT(1) NULL DEFAULT '1'
 );
--- 5. work_order_execution
+
+-- Work Order Execution Table
 CREATE TABLE work_order_execution (
     execution_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     work_order_id BIGINT NOT NULL,
@@ -506,24 +536,24 @@ CREATE TABLE work_order_execution (
     gps_long DECIMAL(11,8),
     parts_used TEXT,
     synced BOOLEAN DEFAULT FALSE,
-	 status VARCHAR(75) NULL DEFAULT NULL,
+    status VARCHAR(75) NULL DEFAULT NULL,
     active TINYINT(1) NULL DEFAULT '1',
     
     FOREIGN KEY (work_order_id) REFERENCES work_orders(work_order_id),
     FOREIGN KEY (agent_id) REFERENCES users(user_id)
 );
 
--- 6. work_order_execution_anomalies
+-- Work Order Execution Anomalies Table
 CREATE TABLE work_order_execution_anomalies (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     execution_id BIGINT NOT NULL,
     anomaly_id BIGINT NOT NULL,
-	 active TINYINT(1) NULL DEFAULT '1',
+    active TINYINT(1) NULL DEFAULT '1',
     FOREIGN KEY (execution_id) REFERENCES work_order_execution(execution_id) ON DELETE CASCADE,
     FOREIGN KEY (anomaly_id) REFERENCES anomalies(anomaly_id) ON DELETE RESTRICT
 );
 
--- 7. work_order_acknowledgments
+-- Work Order Acknowledgments Table
 CREATE TABLE work_order_acknowledgments (
     ack_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     work_order_id BIGINT NOT NULL,
@@ -531,14 +561,14 @@ CREATE TABLE work_order_acknowledgments (
     customer_signature TEXT,
     remarks TEXT,
     acknowledged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-	 status VARCHAR(75) NULL DEFAULT NULL,
+    status VARCHAR(75) NULL DEFAULT NULL,
     active TINYINT(1) NULL DEFAULT '1',
     
     FOREIGN KEY (work_order_id) REFERENCES work_orders(work_order_id),
     FOREIGN KEY (agent_id) REFERENCES users(user_id)
 );
 
--- 8. work_order_notes
+-- Work Order Notes Table
 CREATE TABLE work_order_notes (
     note_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     work_order_id BIGINT NOT NULL,
@@ -546,14 +576,14 @@ CREATE TABLE work_order_notes (
     note TEXT,
     note_type ENUM('FIELD_AGENT', 'REVIEWER', 'SYSTEM') DEFAULT 'FIELD_AGENT',
     added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-	 status VARCHAR(75) NULL DEFAULT NULL,
+    status VARCHAR(75) NULL DEFAULT NULL,
     active TINYINT(1) NULL DEFAULT '1',
     
     FOREIGN KEY (work_order_id) REFERENCES work_orders(work_order_id),
     FOREIGN KEY (added_by) REFERENCES users(user_id)
 );
 
--- 9. work_order_status_logs
+-- Work Order Status Logs Table
 CREATE TABLE work_order_status_logs (
     status_log_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     work_order_id BIGINT NOT NULL,
@@ -562,14 +592,14 @@ CREATE TABLE work_order_status_logs (
     changed_by BIGINT,
     reason TEXT,
     changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-	 status VARCHAR(75) NULL DEFAULT NULL,
+    status VARCHAR(75) NULL DEFAULT NULL,
     active TINYINT(1) NULL DEFAULT '1',
     
     FOREIGN KEY (work_order_id) REFERENCES work_orders(work_order_id),
     FOREIGN KEY (changed_by) REFERENCES users(user_id)
 );
 
--- 10. work_order_attachments
+-- Work Order Attachments Table
 CREATE TABLE work_order_attachments (
     attachment_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     work_order_id BIGINT NOT NULL,
@@ -580,12 +610,12 @@ CREATE TABLE work_order_attachments (
     uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     status VARCHAR(75) NULL DEFAULT NULL,
     active TINYINT(1) NULL DEFAULT '1',
-			
+    
     FOREIGN KEY (work_order_id) REFERENCES work_orders(work_order_id),
     FOREIGN KEY (uploaded_by) REFERENCES users(user_id)
 );
 
--- 11. work_order_feedback
+-- Work Order Feedback Table
 CREATE TABLE work_order_feedback (
     feedback_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     work_order_id BIGINT NOT NULL,
@@ -593,31 +623,28 @@ CREATE TABLE work_order_feedback (
     feedback_type ENUM('REVIEW', 'REWORK_REQUEST', 'COMMENT'),
     comments TEXT,
     feedback_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-	 status VARCHAR(75) NULL DEFAULT NULL,
+    status VARCHAR(75) NULL DEFAULT NULL,
     active TINYINT(1) NULL DEFAULT '1',
     
     FOREIGN KEY (work_order_id) REFERENCES work_orders(work_order_id),
     FOREIGN KEY (feedback_by) REFERENCES users(user_id)
 );
 
--- 12. work_order_reassign
+-- Work Order Reassign Table
 CREATE TABLE work_order_reassign (
     reassign_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     work_order_id BIGINT NOT NULL,
     agent_id BIGINT NOT NULL,
     reason TEXT,
     reassign_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-	 status VARCHAR(75) NULL DEFAULT NULL,
+    status VARCHAR(75) NULL DEFAULT NULL,
     active TINYINT(1) NULL DEFAULT '1',
     
     FOREIGN KEY (work_order_id) REFERENCES work_orders(work_order_id),
     FOREIGN KEY (agent_id) REFERENCES users(user_id)
 );
 
-
--- data captured module tables
-
--- 1. work_order_data_capture
+-- Work Order Data Capture Table
 CREATE TABLE work_order_data_capture (
     capture_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     work_order_id BIGINT NOT NULL,
@@ -633,7 +660,7 @@ CREATE TABLE work_order_data_capture (
     FOREIGN KEY (agent_id) REFERENCES users(user_id)
 );
 
--- 2. new_connection_capture
+-- New Connection Capture Table
 CREATE TABLE new_connection_capture (
     capture_id BIGINT PRIMARY KEY,
     installation_checklist TEXT,
@@ -648,8 +675,7 @@ CREATE TABLE new_connection_capture (
     FOREIGN KEY (capture_id) REFERENCES work_order_data_capture(capture_id) ON DELETE CASCADE
 );
 
-
--- 3. subscription_capture
+-- Subscription Capture Table
 CREATE TABLE subscription_capture (
     capture_id BIGINT PRIMARY KEY,
     plan_name VARCHAR(100),
@@ -663,8 +689,7 @@ CREATE TABLE subscription_capture (
     FOREIGN KEY (capture_id) REFERENCES work_order_data_capture(capture_id) ON DELETE CASCADE
 );
 
-
--- 4. complaint_capture
+-- Complaint Capture Table
 CREATE TABLE complaint_capture (
     capture_id BIGINT PRIMARY KEY,
     issue_description TEXT,
@@ -673,12 +698,11 @@ CREATE TABLE complaint_capture (
     attempted_fixes TEXT,
     evidence_url TEXT,
     active TINYINT(1) NULL DEFAULT '1',
-		
+    
     FOREIGN KEY (capture_id) REFERENCES work_order_data_capture(capture_id) ON DELETE CASCADE
 );
 
-
--- 5. termination_capture
+-- Termination Capture Table
 CREATE TABLE termination_capture (
     capture_id BIGINT PRIMARY KEY,
     final_meter_reading DECIMAL(10,2),
@@ -691,8 +715,7 @@ CREATE TABLE termination_capture (
     FOREIGN KEY (capture_id) REFERENCES work_order_data_capture(capture_id) ON DELETE CASCADE
 );
 
-
--- 6. other_request_capture
+-- Other Request Capture Table
 CREATE TABLE other_request_capture (
     capture_id BIGINT PRIMARY KEY,
     custom_notes TEXT,
@@ -703,7 +726,7 @@ CREATE TABLE other_request_capture (
     FOREIGN KEY (capture_id) REFERENCES work_order_data_capture(capture_id) ON DELETE CASCADE
 );
 
--- 7. data_capture_validation_logs
+-- Data Capture Validation Logs Table
 CREATE TABLE data_capture_validation_logs (
     validation_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     capture_id BIGINT NOT NULL,
@@ -713,12 +736,11 @@ CREATE TABLE data_capture_validation_logs (
     logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     status VARCHAR(75) NULL DEFAULT NULL,
     active TINYINT(1) NULL DEFAULT '1',
-		
+    
     FOREIGN KEY (capture_id) REFERENCES work_order_data_capture(capture_id) ON DELETE CASCADE
 );
 
-
--- 8. offline_capture_queue
+-- Offline Capture Queue Table
 CREATE TABLE offline_capture_queue (
     queue_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     capture_id BIGINT NOT NULL,
@@ -730,9 +752,7 @@ CREATE TABLE offline_capture_queue (
     FOREIGN KEY (capture_id) REFERENCES work_order_data_capture(capture_id) ON DELETE CASCADE
 );
 
--- picture module tables 
-
--- 1. picture_metadata
+-- Picture Metadata Table
 CREATE TABLE picture_metadata (
     picture_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     work_order_id BIGINT NOT NULL,
@@ -753,8 +773,7 @@ CREATE TABLE picture_metadata (
     FOREIGN KEY (agent_id) REFERENCES users(user_id)
 );
 
-
--- 2. picture_qualification
+-- Picture Qualification Table
 CREATE TABLE picture_qualification (
     qualification_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     picture_id BIGINT NOT NULL,
@@ -768,7 +787,7 @@ CREATE TABLE picture_qualification (
     FOREIGN KEY (qualified_by) REFERENCES users(user_id)
 );
 
--- 3. ocr_techniques
+-- OCR Techniques Table
 CREATE TABLE ocr_techniques (
     ocr_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     technique_name VARCHAR(100) NOT NULL UNIQUE, -- e.g., 'Tesseract', 'Google Vision', 'Azure OCR'
@@ -777,7 +796,7 @@ CREATE TABLE ocr_techniques (
     active TINYINT(1) NULL DEFAULT '1'
 );
 
--- 4. picture_annotation
+-- Picture Annotation Table
 CREATE TABLE picture_annotation (
     annotation_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     picture_id BIGINT NOT NULL,
@@ -793,7 +812,7 @@ CREATE TABLE picture_annotation (
     FOREIGN KEY (ocr_id) REFERENCES ocr_techniques(ocr_id) ON DELETE RESTRICT
 );
 
--- 5. picture_download_log
+-- Picture Download Log Table
 CREATE TABLE picture_download_log (
     download_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     picture_id BIGINT, -- NULL for batch download
@@ -808,8 +827,7 @@ CREATE TABLE picture_download_log (
     FOREIGN KEY (downloaded_by) REFERENCES users(user_id)
 );
 
-
--- 6. picture_quality_metrics
+-- Picture Quality Metrics Table
 CREATE TABLE picture_quality_metrics (
     metric_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     agent_id BIGINT NOT NULL,
@@ -823,9 +841,7 @@ CREATE TABLE picture_quality_metrics (
     FOREIGN KEY (agent_id) REFERENCES users(user_id)
 );
 
--- admin modules tables 
-
--- 1. subcontractor_companies
+-- Subcontractor Companies Table
 CREATE TABLE subcontractor_companies (
     subcontractor_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     company_name VARCHAR(255) NOT NULL,
@@ -838,7 +854,7 @@ CREATE TABLE subcontractor_companies (
     active TINYINT(1) NULL DEFAULT '1'
 );
 
--- 2. work_centre_subcontractors
+-- Work Centre Subcontractors Table
 CREATE TABLE work_centre_subcontractors (
     assignment_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     work_centre_id BIGINT NOT NULL,
@@ -852,120 +868,6 @@ CREATE TABLE work_centre_subcontractors (
     FOREIGN KEY (subcontractor_id) REFERENCES subcontractor_companies(subcontractor_id),
     FOREIGN KEY (assigned_by) REFERENCES users(user_id)
 );
--- First create the ENUM types
-CREATE TYPE feedback_category AS ENUM ('BUG', 'FEATURE', 'IMPROVEMENT', 'OTHER');
-CREATE TYPE feedback_priority AS ENUM ('LOW', 'MEDIUM', 'HIGH', 'URGENT');
-CREATE TYPE feedback_status AS ENUM ('PENDING', 'IN_REVIEW', 'RESOLVED', 'CLOSED');
 
-CREATE TYPE ticket_category AS ENUM ('TECHNICAL', 'BILLING', 'ACCOUNT', 'SERVICE', 'OTHER');
-CREATE TYPE ticket_priority AS ENUM ('LOW', 'MEDIUM', 'HIGH', 'URGENT');
-CREATE TYPE ticket_status AS ENUM ('OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED');
-
--- Create SystemFeedback table
-CREATE TABLE system_feedback (
-    feedback_id VARCHAR(75) PRIMARY KEY,
-    user_id VARCHAR(75) NOT NULL,
-    category feedback_category NOT NULL,
-    subject VARCHAR(255) NOT NULL,
-    description TEXT NOT NULL,
-    priority feedback_priority DEFAULT 'MEDIUM',
-    status feedback_status DEFAULT 'PENDING',
-    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    resolved_at TIMESTAMP NULL,
-    active BOOLEAN DEFAULT TRUE,
-    
-    FOREIGN KEY (user_id) REFERENCES users(uuid)
-);
-
--- Create SupportTicket table
-CREATE TABLE support_tickets (
-    ticket_id VARCHAR(75) PRIMARY KEY,
-    user_id VARCHAR(75) NOT NULL,
-    category ticket_category NOT NULL,
-    subject VARCHAR(255) NOT NULL,
-    description TEXT NOT NULL,
-    priority ticket_priority DEFAULT 'MEDIUM',
-    status ticket_status DEFAULT 'OPEN',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    resolved_at TIMESTAMP NULL,
-    active BOOLEAN DEFAULT TRUE,
-    
-    FOREIGN KEY (user_id) REFERENCES users(uuid)
-);
-- ==============================
--- AUTH TOKENS
--- ==============================
-CREATE TABLE auth_tokens (
-    token_id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    user_id BIGINT NOT NULL,
-    access_token TEXT NOT NULL,
-    refresh_token TEXT NOT NULL,
-    token_type VARCHAR(50) DEFAULT 'bearer',
-    expires_at TIMESTAMP NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    revoked_at TIMESTAMP NULL,
-    device_info JSON,
-    ip_address VARCHAR(45),
-    status VARCHAR(50) DEFAULT 'ACTIVE',
-    active TINYINT(1) DEFAULT 1,
-
-    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-);
-
--- ==============================
--- NOTIFICATION HISTORY
--- ==============================
-CREATE TABLE notification_history (
-    history_id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    notification_id BIGINT NOT NULL,
-    user_id BIGINT NOT NULL,
-    channel ENUM('EMAIL', 'SMS', 'PUSH', 'IN_APP') NOT NULL,
-    status ENUM('PENDING', 'SENT', 'FAILED', 'DELIVERED', 'READ') DEFAULT 'PENDING',
-    error_message TEXT,
-    delivery_timestamp TIMESTAMP NULL,
-    delivery_metadata JSON,
-    retry_count INT DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    active TINYINT(1) DEFAULT 1,
-
-    FOREIGN KEY (notification_id) REFERENCES user_notifications(notification_id),
-    FOREIGN KEY (user_id) REFERENCES users(user_id)
-);
-
--- ==============================
--- USER ACTIVITY LOGS
--- ==============================
-CREATE TABLE user_activity_logs (
-    log_id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    user_id BIGINT NOT NULL,
-    activity_type VARCHAR(100) NOT NULL,
-    activity_details JSON,
-    ip_address VARCHAR(45),
-    user_agent TEXT,
-    device_info JSON,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    status VARCHAR(50) DEFAULT 'SUCCESS',
-    active TINYINT(1) DEFAULT 1,
-
-    FOREIGN KEY (user_id) REFERENCES users(user_id)
-);
-
--- ==============================
--- USER NOTIFICATION PREFERENCES
--- ==============================
-CREATE TABLE user_notification_preferences (
-    preference_id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    user_id BIGINT NOT NULL,
-    notification_type VARCHAR(100) NOT NULL,
-    channel ENUM('EMAIL', 'SMS', 'PUSH', 'IN_APP') NOT NULL,
-    is_enabled BOOLEAN DEFAULT TRUE,
-    frequency VARCHAR(50) DEFAULT 'IMMEDIATE',
-    quiet_hours_start TIME NULL,
-    quiet_hours_end TIME NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    active TINYINT(1) DEFAULT 1,
-
-    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
-    UNIQUE KEY uq_user_notification_pref (user_id, notification_type, channel)
-);
+-- Re-enable foreign key checks
+SET FOREIGN_KEY_CHECKS = 1; 

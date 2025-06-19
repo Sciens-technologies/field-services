@@ -1,892 +1,804 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Security, Request, Query
-from fastapi.security import OAuth2PasswordBearer, HTTPBearer, OAuth2PasswordRequestForm
+from datetime import datetime, timedelta
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Body, Form
 from sqlalchemy.orm import Session
-from typing import List, Optional
-from sqlalchemy import text, or_
+from sqlalchemy import update, select, and_, or_
+from pydantic import EmailStr, BaseModel, Field
 import os
-import jwt
-import datetime
-from api.utils.email import send_email, send_temporary_password_email
-import traceback
-from pydantic import EmailStr
-from fastapi import Request
-from typing import Optional
-from fastapi import FastAPI
-from fastapi import APIRouter
 import secrets
 import string
-from api.services.users import get_current_user_optional
-from api.services.users import create_jwt_token, JWT_ACCESS_TOKEN_EXPIRES_IN, JWT_REFRESH_TOKEN_EXPIRES_IN
-from api.utils.util import generate_random_password
-import datetime as dt
+import logging
+from uuid import uuid4
+from passlib.context import CryptContext
 
-# Use in your endpoint:
-generated_password = generate_random_password()
-users_router = APIRouter()
-# At the top of users.py or in a new api/constants.py
-SUPPORTED_EVENTS = {
-    "email_notifications": ["welcome", "password_reset", "feedback"],
-    "sms_notifications": ["otp", "alert"],
-    "push_notifications": ["reminder", "update"]
-}
+# Set up logging
+logger = logging.getLogger(__name__)
+from typing import Optional, Dict, cast, Any, List
+from sqlalchemy.orm.attributes import InstrumentedAttribute
+from sqlalchemy.sql.schema import Column as SAColumn
 
-# Session timeout settings
-INACTIVITY_TIMEOUT_STR = os.getenv("INACTIVITY_TIMEOUT", "900")
-INACTIVITY_TIMEOUT = int(INACTIVITY_TIMEOUT_STR.split('#')[0].strip())  # 15 minutes in seconds
-
-from api.schemas import (
-    UserCreate, UserResponse, UserUpdate, TokenSchema, 
-    LoginRequest, SignupRequest, RefreshTokenRequest,
-    ChangePasswordRequest, UpdateProfileRequest, AdminCreateUserRequest,
-    NotificationPreferencesUpdate, NotificationPreferencesResponse,
-    FeedbackRequest, SupportTicketCreate
-)
-from api.services.users import (
-    get_user_by_email, get_user_by_id, get_current_user, 
-    has_role, get_user_from_token, has_permission
-)
-from api.utils.util import get_db
-from api.utils.email import send_welcome_email, send_password_reset_email
+from db.database import get_db
 from db.models import (
-    User, Role, UserRole, Token, LoginActivity, 
-    Permission, RolePermission, UserPermission,
-    UserNotificationPreferences, NotificationHistory, UserActivityLog,
-    Feedback
+    User, Token, UserActivityLog, UserNotificationPreferences,
+    SystemFeedback, SupportTicket, UserStatus, UserRole, Role, Permission, RolePermission
+)
+from auth.auth import get_current_user, create_access_token
+from api.schemas import (
+    UserCreate, UserResponse, UserUpdate,
+    TokenResponse, LoginRequest, ChangePasswordRequest, NotificationPreferencesUpdate, NotificationChannelPreferences,
+    FeedbackCreate, FeedbackResponse, SupportTicketCreate, SupportTicketResponse, LoginResponse, ForgotPasswordResponse,
+    SystemFeedbackRequest, SystemFeedbackResponse, SignupRequest
 )
 from passlib.hash import bcrypt
+from api.utils.email import send_email, send_password_reset_email
+from api.services.users import get_user_roles, user_to_response
 
-# Load environment variables
+# Supported notification types
+NOTIFICATION_TYPES = {
+    "email": [
+        "account_updates",      # Account-related changes
+        "security_alerts",      # Security-related notifications
+        "work_updates",         # Updates about work/tasks
+        "feedback_responses",   # Responses to submitted feedback
+        "ticket_updates",       # Updates on support tickets
+        "system_announcements"  # System-wide announcements
+    ],
+    "sms": [
+        "security_alerts",      # Critical security notifications
+        "urgent_updates",       # Time-sensitive updates
+        "work_assignments"      # New work assignments
+    ],
+    "push": [
+        "new_messages",         # New message notifications
+        "task_reminders",       # Task deadline reminders
+        "status_changes",       # Status change notifications
+        "approvals"            # Approval request notifications
+    ]
+}
 
-# --- Auth ---
-@users_router.post("/users/token", tags=["Auth"])
+# Add this near the top of the file, after imports
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+users_router = APIRouter()
+
+def extract_value(val, name):
+    if isinstance(val, (InstrumentedAttribute, SAColumn)):
+        # For SQLAlchemy Column types, get the value from the instance
+        if hasattr(val, 'value'):
+            val = val.value
+        else:
+            # Try to get the value directly from the instance
+            try:
+                val = getattr(val, 'value', None)
+                if val is None:
+                    raise HTTPException(status_code=500, detail=f"User attribute '{name}' is not a value")
+            except Exception:
+                raise HTTPException(status_code=500, detail=f"User attribute '{name}' is not a value")
+    if val is None:
+        raise HTTPException(status_code=404, detail=f"User data incomplete: {name} is None")
+    return val
+
+# --- Authentication ---
+@users_router.post(
+    "/login",
+    summary="User login",
+    description="Authenticate user and generate access token for API access. Accepts JSON body only.",
+    response_model=LoginResponse,
+    response_description="Access token and user info",
+)
 async def login_for_access_token(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_db)
-):
-    user = get_user_by_email(db, form_data.username)
-    print(f"Login attempt for: {form_data.username}")
-    if not user:
-        print("User not found")
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    if not bcrypt.verify(form_data.password, user.hashed_password):
-        print("Password mismatch")
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    if user.status == 'blocked':
-        raise HTTPException(status_code=401, detail="User is blocked")
-    if user.status != 'active':
-        raise HTTPException(status_code=401, detail="User is deactivated")
-    tokens = generate_tokens(user.id, user.email, user.role_id)
-    print("Login successful")
-    return {
-        "access_token": tokens["access_token"],
-        "token_type": "bearer",
-        "id": user.id,
-        "first_name": user.first_name,
-        "last_name": user.last_name,
-        "role": user.role.name if hasattr(user.role, "name") else user.role,
-        "email": user.email
-    }
-
-@users_router.post("/logout/")
-async def logout(
-    token: str = Query(..., description="Access token to invalidate"),
-    email: EmailStr = Query(..., description="User email to logout"),
+    login_data: LoginRequest = Body(
+        ..., 
+        example={
+            "username": "user@example.com",
+            "password": "yourpassword"
+        }
+    ),
     db: Session = Depends(get_db)
 ):
     """
-    Logout a user by both access token and email.
-    Both token and email are required for security.
+    Authenticate user and generate access token for API access.
+    Handles user login by validating credentials and providing authentication token.
+    Accepts only JSON body.
     """
     try:
-        # Find user by email
-        user = get_user_by_email(db, email)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        # Find the token in the database and verify it belongs to the user
-        db_token = db.query(Token).filter(
-            Token.access_token == token,
-            Token.user_id == user.id,
-            Token.revoked == False
-        ).first()
+        print("\n=== Login Debug Information ===")
+        print(f"Login attempt for username: {login_data.username}")
         
-        if not db_token:
+        # Find user using select()
+        stmt = select(User).where(User.email == login_data.username)
+        user = db.execute(stmt).scalar_one_or_none()
+        
+        if not user:
+            print(f"User not found with email: {login_data.username}")
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        print(f"Found user: {user.email}")
+        
+        # Get password hash using scalar()
+        password_hash = db.scalar(select(User.password_hash).where(User.user_id == user.user_id))
+        if password_hash is None:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+            
+        print(f"Stored password hash: {password_hash}")
+        print(f"Attempting to verify password...")
+        
+        # Verify password
+        if not pwd_context.verify(login_data.password, str(password_hash)):
+            print("Password verification failed")
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        print("Password verified successfully")
+        
+        # Get user status and activation status using scalar()
+        user_status = db.scalar(select(User.status).where(User.user_id == user.user_id))
+        is_activated = db.scalar(select(User.activated).where(User.user_id == user.user_id))
+        print(f"User status from DB: {user_status}")
+        print(f"User activation status: {is_activated}")
+        
+        # Check if user is active
+        if not is_activated:
+            raise HTTPException(status_code=401, detail="Account is not activated")
+            
+        if user_status != UserStatus.ACTIVE:
+            raise HTTPException(status_code=401, detail=f"Account is {user_status}")
+
+        # Get user roles
+        user_id = db.scalar(select(User.user_id).where(User.user_id == user.user_id))
+        if user_id is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        user_roles = await get_user_roles(db, user_id)
+        print(f"User roles: {user_roles}")
+
+        # Generate JWT token
+        token_data = {
+            "sub": str(user.user_id),  # Required for get_current_user
+            "email": str(user.email),
+            "username": str(user.username),
+            "roles": user_roles  # Include roles in token
+        }
+        
+        print(f"Creating token with data: {token_data}")
+        access_token = create_access_token(token_data, expires_delta=timedelta(days=1))
+        refresh_token = create_access_token(token_data, expires_delta=timedelta(days=7))
+
+        # Store token in DB
+        expires_at = datetime.utcnow() + timedelta(days=1)
+        user_id = db.scalar(select(User.user_id).where(User.user_id == user.user_id))
+        if user_id is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        token_record = Token(
+            user_id=user_id,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at,
+            revoked=False,
+            created_at=datetime.utcnow()
+        )
+        db.add(token_record)
+        db.commit()
+
+        # Get user details
+        user_details = user_to_response(user, db)
+
+        # Create response with proper type casting
+        return LoginResponse(
+            token=TokenResponse(
+                access_token=access_token,
+                token_type="bearer",
+                expires_in=86400  # 24 hours in seconds
+            ),
+            user=UserResponse(**user_details),
+            roles=user_roles
+        )
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        print(f"\nUnexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@users_router.post("/logout")
+async def logout(
+    email: EmailStr = Query(..., description="User email to logout"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if str(current_user.email) != email:
+        raise HTTPException(status_code=403, detail="Email does not match the authenticated user")
+    """
+    Securely end user session by invalidating their access token.
+    Logs the logout activity and updates token status.
+    """
+    try:
+        # Get token using select()
+        stmt = select(Token).where(
+            and_(
+                Token.user_id == current_user.user_id,
+                Token.revoked.is_(False)
+            )
+        ).order_by(Token.created_at.desc())
+        token = db.execute(stmt).scalar_one_or_none()
+        
+        if not token:
             raise HTTPException(status_code=404, detail="Token not found or already revoked")
         
-        # Mark the token as revoked
-        db_token.revoked = True
-
-        # Record logout time in activity logs
-        activity = db.query(LoginActivity).filter(
-            LoginActivity.agent_id == user.id,
-            LoginActivity.logout_time.is_(None)
-        ).first()
-        
-        if activity:
-            activity.logout_time = datetime.datetime.utcnow()
-        
+        # Update token using update()
+        token_update = (
+            update(Token)
+            .where(Token.id == token.id)
+            .values({
+                "revoked": True,
+                "last_used_at": datetime.utcnow()
+            })
+        )
+        db.execute(token_update)
         db.commit()
-        
+
+        # Extract user_id from SQLAlchemy Column using db.scalar()
+        user_id = db.scalar(select(User.user_id).where(User.user_id == current_user.user_id))
+        if user_id is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Log the logout activity
+        activity_log = UserActivityLog(
+            user_id=user_id,
+            actor_id=user_id,
+            action="LOGOUT",
+            details="User logged out successfully",
+            timestamp=datetime.utcnow(),
+            ip_address=None,  # You can add IP address tracking if needed
+            user_agent=None   # You can add user agent tracking if needed
+        )
+        db.add(activity_log)
+        db.commit()
+
         return {"message": "Successfully logged out"}
     except Exception as e:
         db.rollback()
-        print(f"Error in logout: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error during logout: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# --- 1. Signup & Login ---
-@users_router.post("/signup/", response_model=UserResponse)
+@users_router.post("/signup", response_model=UserResponse)
 async def signup(
     user_data: SignupRequest,
-    db: Session = Depends(get_db),
-    current_user: Optional[User] = Depends(get_current_user_optional)  # Use an optional dependency
+    db: Session = Depends(get_db)
 ):
-    # Allow open signup if no users exist
-    user_count = db.query(User).count()
-    if user_count == 0:
-        # Allow first user to be created as admin
-        pass
-    else:
-        admin_roles = [1, 2]
-        if not current_user or current_user.role_id not in admin_roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to perform this action"
-            )
-    
+    """
+    Register a new user in the system.
+    Only the first user can sign up. Further signups are blocked.
+    """
     try:
-        # Check if user already exists
-        existing_user = get_user_by_email(db, user_data.email)
-        if existing_user:
+        # Block signup if any user already exists
+        if db.scalar(select(User)):
+            raise HTTPException(status_code=403, detail="Signup is only allowed for the first user.")
+        # Check if user exists (redundant, but safe)
+        if db.scalar(select(User).where(User.email == user_data.email)):
             raise HTTPException(status_code=400, detail="Email already registered")
-        
-        # Hash the password
-        hashed_password = bcrypt.hash(user_data.password)
-        
-        # Get or create role
-        role = db.query(Role).filter(Role.name == user_data.role).first()
-        if not role:
-            role = Role(name=user_data.role)
-            db.add(role)
-            db.commit()
-            db.refresh(role)
-        
         # Create new user
+        hashed_password = pwd_context.hash(user_data.password)
         new_user = User(
+            uuid=str(uuid4()),
+            username=user_data.username,
             email=user_data.email,
+            password_hash=hashed_password,
             first_name=user_data.first_name,
             last_name=user_data.last_name,
-            hashed_password=hashed_password,
-            role_id=role.id,
-            status='active',
-            created_at=datetime.datetime.utcnow(),
-            updated_at=datetime.datetime.utcnow()
+            status=UserStatus.ACTIVE,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+            activated=True,
+            last_login=None,
+            last_login_ip=None
         )
-        
         db.add(new_user)
         db.commit()
         db.refresh(new_user)
-        
-        # Send welcome email
-        try:
-            send_welcome_email(
-                email=user_data.email,
-                username=user_data.email,
-                password="[HIDDEN]",  # Don't include password in email for security
-                first_name=user_data.first_name
-            )
-        except Exception as e:
-            print(f"Error sending welcome email: {str(e)}")
-        
-        return new_user
-    except HTTPException:
-        raise
+        # Create response using user_to_response helper
+        response_data = user_to_response(new_user, db)
+        return UserResponse(**response_data)
+    except HTTPException as he:
+        raise he
     except Exception as e:
         db.rollback()
-        print(f"Error in signup: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error creating user: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# --- 2. Session & Auth ---
-@users_router.get("/session/status", status_code=status.HTTP_200_OK)
+@users_router.get("/session/status")
 async def check_session_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Checks if the current user's session is still active based on the inactivity timeout.
-    Returns the session status and time remaining before automatic logout.
+    Verify if user's session is still valid and active.
+    Checks token validity and updates last activity timestamp.
     """
     try:
-        user_id = current_user.id
-        current_time = datetime.datetime.utcnow()
-        
-        # Get the last activity timestamp from the auth_tokens table
-        result = db.execute(
-            text("""
-            SELECT last_used_at
-            FROM auth_tokens
-            WHERE user_id = :user_id AND revoked = FALSE
-            ORDER BY last_used_at DESC
-            LIMIT 1
-            """),
-            {"user_id": user_id}
-        ).fetchone()
-        
-        if not result or not result[0]:
-            # No activity record found, update it now
-            db.execute(
-                text("""
-                UPDATE auth_tokens
-                SET last_used_at = :last_used_at
-                WHERE user_id = :user_id AND revoked = FALSE
-                """),
-                {"user_id": user_id, "last_used_at": current_time}
+        # Get token using select()
+        stmt = select(Token).where(
+            and_(
+                Token.user_id == current_user.user_id,
+                Token.revoked.is_(False),
+                Token.expires_at > datetime.utcnow()
             )
-            db.commit()
-            
-            return {
-                "active": True,
-                "last_activity": current_time.isoformat(),
-                "seconds_remaining": INACTIVITY_TIMEOUT
-            }
+        ).order_by(Token.created_at.desc())
+        token = db.execute(stmt).scalar_one_or_none()
         
-        last_activity = result[0]
-        time_since_last_activity = (current_time - last_activity).total_seconds()
-        seconds_remaining = max(0, INACTIVITY_TIMEOUT - time_since_last_activity)
-        
-        # If the session has timed out, mark the token as revoked
-        if seconds_remaining <= 0:
-            db.execute(
-                text("""
-                UPDATE auth_tokens
-                SET revoked = TRUE
-                WHERE user_id = :user_id AND revoked = FALSE
-                """),
-                {"user_id": user_id}
-            )
-            db.commit()
-            
+        if not token:
             return {
                 "active": False,
-                "last_activity": last_activity.isoformat(),
-                "seconds_remaining": 0,
-                "message": "Session expired due to inactivity"
+                "message": "Session expired"
             }
         
-        # Update the last_used_at timestamp to extend the session
-        db.execute(
-            text("""
-            UPDATE auth_tokens
-            SET last_used_at = :last_used_at
-            WHERE user_id = :user_id AND revoked = FALSE
-            """),
-            {"user_id": user_id, "last_used_at": current_time}
+        # Update token using update()
+        update_stmt = (
+            update(Token)
+            .where(Token.token_id == token.token_id)
+            .values(last_used_at=datetime.utcnow())
         )
+        db.execute(update_stmt)
         db.commit()
+        
+        # Get user data using scalar()
+        user_id = db.scalar(select(User.user_id).where(User.user_id == current_user.user_id))
+        email = db.scalar(select(User.email).where(User.user_id == current_user.user_id))
+        status = db.scalar(select(User.status).where(User.user_id == current_user.user_id))
+        
+        if any(x is None for x in [user_id, email, status]):
+            raise HTTPException(status_code=404, detail="User data incomplete")
         
         return {
             "active": True,
-            "last_activity": last_activity.isoformat(),
-            "seconds_remaining": int(seconds_remaining)
+            "last_activity": token.last_used_at.isoformat(),
+                            "user": {
+                    "user_id": int(user_id) if user_id is not None else 0,
+                    "email": str(email),
+                    "status": str(status)
+                }
         }
     except Exception as e:
         db.rollback()
-        print(f"Error checking session status: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error checking session status: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# --- 3. Profile & Password ---
-@users_router.put("/profile/")
-async def update_profile(
-    update_data: UpdateProfileRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+@users_router.get("/profile")
+async def get_profile(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
     """
-    Update user profile. Email cannot be modified.
+    Retrieve current user's profile information.
+    Returns user's personal and account details.
     """
     try:
-        # Always fetch the user from the current session
-        user = db.query(User).filter(User.id == current_user.id).first()
+        # Get user from database to ensure we have fresh data
+        user = db.query(User).filter(User.user_id == current_user.user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
-        # Update fields
-        if update_data.first_name:
-            user.first_name = update_data.first_name
-        if update_data.last_name:
-            user.last_name = update_data.last_name
-        if update_data.phone_number:
-            user.phone_number = update_data.phone_number
-        
-        user.updated_at = datetime.datetime.utcnow()
+
+        # Use user_to_response to convert user to response format
+        response_data = user_to_response(user, db)
+        return UserResponse(**response_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@users_router.put("/profile", response_model=UserResponse)
+async def update_profile(
+    update_data: UserUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Update user profile information.
+    """
+    try:
+        update_stmt = (
+            update(User)
+            .where(User.user_id == current_user.user_id)
+            .values({
+                "username": update_data.username,
+                "first_name": update_data.first_name,
+                "last_name": update_data.last_name,
+                "updated_at": datetime.utcnow()
+            })
+        )
+        db.execute(update_stmt)
         db.commit()
-        db.refresh(user)
         
-        return {"message": "Profile updated successfully"}
+        # Get updated user
+        user = db.query(User).filter(User.user_id == current_user.user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+            
+        # Use user_to_response to convert user to response format
+        response_data = user_to_response(user, db)
+        return UserResponse(**response_data)
     except Exception as e:
         db.rollback()
-        print(f"Error updating profile: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error updating profile: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@users_router.post("/change-password/")
+@users_router.post("/change-password")
 async def change_password(
     password_data: ChangePasswordRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Change the current user's password and revoke all existing tokens.
+    Change user password.
     """
     try:
-        print(f"Attempting to change password for user ID: {current_user.id}")
+        # Get current password hash
+        password_hash = db.scalar(select(User.password_hash).where(User.user_id == current_user.user_id))
+        if password_hash is None:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+            
+        # Verify current password
+        if not pwd_context.verify(password_data.current_password, str(password_hash)):
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
         
-        # Get fresh user data from database
-        user = db.query(User).filter(User.id == current_user.id).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        # Verify old password
-        if not bcrypt.verify(password_data.old_password, user.hashed_password):
-            print(f"Password verification failed for user ID: {user.id}")
-            raise HTTPException(status_code=400, detail="Incorrect current password")
-        
-        print(f"Old password verified successfully for user ID: {user.id}")
-        
-        # Hash and update new password
-        new_hashed_password = bcrypt.hash(password_data.new_password)
-        
-        # Update password and timestamp
-        db.execute(
-            text("UPDATE users SET hashed_password = :new_password, updated_at = :updated_at WHERE id = :user_id"),
-            {
-                "new_password": new_hashed_password,
-                "updated_at": datetime.datetime.utcnow(),
-                "user_id": user.id
-            }
+        # Update password using update()
+        new_password_hash = pwd_context.hash(password_data.new_password)
+        update_stmt = (
+            update(User)
+            .where(User.user_id == current_user.user_id)
+            .values(
+                password_hash=new_password_hash,
+                updated_at=datetime.utcnow()
+            )
         )
-        
-        print(f"Password updated in database for user ID: {user.id}")
-        
-        # Revoke all existing tokens
-        db.execute(
-            text("UPDATE auth_tokens SET revoked = TRUE WHERE user_id = :user_id"),
-            {"user_id": user.id}
-        )
-        
-        print(f"Tokens revoked for user ID: {user.id}")
-        
-        # Log the password change
-        log = UserActivityLog(
-            user_id=user.id,
-            actor_id=user.id,
-            action="change_password",
-            details="Password changed by user",
-            timestamp=datetime.datetime.utcnow()
-        )
-        db.add(log)
-        
+        db.execute(update_stmt)
         db.commit()
-        print(f"Password change completed successfully for user ID: {user.id}")
         
-        return {"message": "Password changed successfully"}
+        return {"message": "Password updated successfully"}
     except HTTPException as he:
-        print(f"HTTP Exception in change_password: {str(he)}")
         raise he
     except Exception as e:
         db.rollback()
-        print(f"Error in change_password: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error changing password: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@users_router.post("/forgot-password/")
+@users_router.post(
+    "/forgot-password",
+    response_model=ForgotPasswordResponse,
+    summary="Initiate password reset process",
+    description="Generates a reset key and sends password reset instructions to the user's email"
+)
 async def forgot_password(
     email: EmailStr = Query(..., description="User email address"),
     db: Session = Depends(get_db)
 ):
     """
-    Initiates password reset process by sending a reset link to the user's email.
-    Password reset emails are a special case and will be sent regardless of notification preferences
-    as they are critical for account security.
+    Initiate password reset process.
     """
     try:
-        # Find user by email
-        user = get_user_by_email(db, email)
-        if not user:
-            print(f"User not found for email: {email}")
-            return {"message": "If the email exists, a password reset link has been sent"}
-        
-        # Generate a secure token
-        reset_token = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(64))
-        
-        # Store token in database with expiration (24 hours)
-        expires_at = datetime.datetime.utcnow() + datetime.timedelta(hours=24)
-        
-        # Delete any existing reset tokens for this user
-        db.execute(
-            text("DELETE FROM password_reset_tokens WHERE user_id = :user_id"),
-            {"user_id": user.id}
-        )
-        
-        # Create new reset token
-        db.execute(
-            text("""
-            INSERT INTO password_reset_tokens (user_id, token, expires_at)
-            VALUES (:user_id, :token, :expires_at)
-            """),
-            {"user_id": user.id, "token": reset_token, "expires_at": expires_at}
-        )
-        
-        # Send password reset email (this is a critical security email, so we send it regardless of preferences)
-        reset_link = f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/reset-password?token={reset_token}"
-        
-        try:
-            send_email(
-                to_email=user.email,
-                subject="Password Reset Request - Field Service App",
-                plain_text=f"""Hello {user.first_name},
-
-We received a request to reset your password for the Field Service App.
-
-Click here to reset your password: {reset_link}
-
-This link will expire in 24 hours.
-
-If you did not request a password reset, please ignore this email.
-
-Thank you,
-The Field Service Team""",
-                html_content=f"""
-<!DOCTYPE html>
-<html>
-<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <div style="background-color: #4a90e2; color: white; padding: 15px; text-align: center;">
-        <h2>Password Reset Request</h2>
-    </div>
-    
-    <div style="padding: 20px; border: 1px solid #ddd;">
-        <p>Hello {user.first_name},</p>
-        <p>We received a request to reset your password for the Field Service App.</p>
-        
-        <p style="text-align: center; margin: 30px 0;">
-            <a href="{reset_link}" style="background-color: #4a90e2; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">Click here to reset your password</a>
-        </p>
-        
-        <p>This link will expire in 24 hours.</p>
-        <p>If you did not request a password reset, please ignore this email.</p>
-        
-        <p>Thank you,<br>The Field Service Team</p>
-    </div>
-</body>
-</html>""",
-                ignore_preferences=True,  # Send regardless of notification preferences
-                db=db  # Pass the database session
-            )
-            
-            # Log the password reset request
-            log = UserActivityLog(
-                user_id=user.id,
-                actor_id=user.id,
-                action="password_reset_requested",
-                details="Password reset requested via forgot password",
-                timestamp=datetime.datetime.utcnow()
-            )
-            db.add(log)
-            db.commit()
-            
-            print(f"Password reset email sent successfully to: {email}")
-            return {"message": "If the email exists, a password reset link has been sent"}
-            
-        except Exception as email_error:
-            print(f"Error sending password reset email: {str(email_error)}")
-            # Still return success to not reveal if email exists
-            return {"message": "If the email exists, a password reset link has been sent"}
-            
-    except Exception as e:
-        db.rollback()
-        print(f"Error in forgot password: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
-
-@users_router.post("/reset-password/")
-async def reset_password(
-    token: str = Query(..., description="Password reset token"),
-    new_password: str = Query(..., min_length=8, description="New password"),
-    db: Session = Depends(get_db)
-):
-    """
-    Reset password using the reset token.
-    """
-    try:
-        # Find valid reset token
-        result = db.execute(
-            text("""
-            SELECT user_id, expires_at 
-            FROM password_reset_tokens 
-            WHERE token = :token AND used = FALSE
-            """),
-            {"token": token}
-        ).fetchone()
-        
-        if not result:
-            raise HTTPException(status_code=400, detail="Invalid or expired reset token")
-            
-        user_id, expires_at = result
-        
-        if expires_at < datetime.datetime.utcnow():
-            raise HTTPException(status_code=400, detail="Reset token has expired")
-            
-        # Get user
-        user = db.query(User).filter(User.id == user_id).first()
+        # Get user using select()
+        stmt = select(User).where(User.email == email)
+        user = db.execute(stmt).scalar_one_or_none()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-            
-        # Update password
-        user.hashed_password = bcrypt.hash(new_password)
-        user.updated_at = datetime.datetime.utcnow()
         
-        # Mark token as used
-        db.execute(
-            text("UPDATE password_reset_tokens SET used = TRUE WHERE token = :token"),
-            {"token": token}
+        # Generate reset key
+        reset_key = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(32))
+        
+        # Update user using update()
+        update_stmt = (
+            update(User)
+            .where(User.user_id == user.user_id)
+            .values(
+                reset_key=reset_key,
+                reset_at=datetime.utcnow()
+            )
         )
-        
-        # Revoke all existing tokens
-        db.execute(
-            text("UPDATE auth_tokens SET revoked = TRUE WHERE user_id = :user_id"),
-            {"user_id": user.id}
-        )
-        
-        # Log the password reset
-        log = UserActivityLog(
-            user_id=user.id,
-            actor_id=user.id,
-            action="password_reset_completed",
-            details="Password reset completed via reset token",
-            timestamp=datetime.datetime.utcnow()
-        )
-        db.add(log)
-        
+        db.execute(update_stmt)
         db.commit()
         
-        # Send confirmation email
-        try:
-            send_email(
-                to_email=user.email,
-                subject="Password Reset Successful",
-                plain_text=f"""
-                Hello {user.first_name},
-
-                Your password has been successfully reset.
-                If you did not perform this action, please contact support immediately.
-
-                Best regards,
-                Your Application Team
-                """
-            )
-        except Exception as email_error:
-            print(f"Error sending password reset confirmation email: {str(email_error)}")
-            
-        return {"message": "Password has been reset successfully"}
+        # Send reset email
+        email_sent = await send_password_reset_email(
+            email=str(user.email),
+            username=str(user.username),
+            reset_key=reset_key
+        )
         
+        if not email_sent:
+            logger.warning(f"Failed to send password reset email to {user.email}")
+            
+        return {
+            "message": "Password reset instructions sent to your email",
+            "reset_key": reset_key,
+            "email": str(user.email)
+        }
     except HTTPException as he:
         raise he
     except Exception as e:
         db.rollback()
-        print(f"Error resetting password: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error resetting password: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# --- 6. OAuth2 Password Grant ---
-@users_router.post("/users/token")
-async def login_for_access_token(
-    form_data: OAuth2PasswordRequestForm = Depends(),
+@users_router.post("/reset-password")
+async def reset_password(
+    reset_key: str = Query(..., description="Password reset key"),
+    new_password: str = Query(..., min_length=8, description="New password"),
     db: Session = Depends(get_db)
 ):
-    user = get_user_by_email(db, form_data.username)
-    print(f"Login attempt for: {form_data.username}")
-    if not user:
-        print("User not found")
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    if not bcrypt.verify(form_data.password, user.hashed_password):
-        print("Password mismatch")
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    if user.status == 'blocked':
-        raise HTTPException(status_code=401, detail="User is blocked")
-    if user.status != 'active':
-        raise HTTPException(status_code=401, detail="User is deactivated")
-    tokens = generate_tokens(user.id, user.email, user.role_id)
-    print("Login successful")
-    return {
-        "access_token": tokens["access_token"],
-        "token_type": "bearer"
-    }
+    """
+    Reset user password using reset key.
+    """
+    try:
+        # Get user using select()
+        stmt = select(User).where(User.reset_key == reset_key)
+        user = db.execute(stmt).scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="Invalid reset key")
+        
+        # Check reset key expiration (24 hours)
+        reset_at = db.scalar(select(User.reset_at).where(User.user_id == user.user_id))
+        if not reset_at or (datetime.utcnow() - reset_at) > timedelta(hours=24):
+            raise HTTPException(status_code=400, detail="Reset key has expired")
+        
+        # Update password using update()
+        new_password_hash = pwd_context.hash(new_password)
+        update_stmt = (
+            update(User)
+            .where(User.user_id == user.user_id)
+            .values(
+                password_hash=new_password_hash,
+                reset_key=None,
+                reset_at=None,
+                updated_at=datetime.utcnow()
+            )
+        )
+        db.execute(update_stmt)
+        db.commit()
+        
+        return {"message": "Password reset successful"}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
-def generate_tokens(user_id, email, role_id):
-    access_token = create_jwt_token(user_id, email, role_id, JWT_ACCESS_TOKEN_EXPIRES_IN)
-    refresh_token = create_jwt_token(user_id, email, role_id, JWT_REFRESH_TOKEN_EXPIRES_IN)
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token
-    }
-
-@users_router.get("/notifications/preferences/", response_model=NotificationPreferencesResponse)
+@users_router.get("/notifications/preferences")
 async def get_notification_preferences(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Get current notification preferences
+    Get user's notification preferences.
+    Retrieves or creates default notification settings.
     """
     try:
-        prefs = db.query(UserNotificationPreferences).filter_by(user_id=current_user.id).first()
+        # Get preferences using select()
+        stmt = select(UserNotificationPreferences).where(
+            UserNotificationPreferences.user_id == current_user.user_id
+        )
+        prefs = db.execute(stmt).scalar_one_or_none()
+        
         if not prefs:
-            # Create default preferences if none exist
+            # Get user_id using scalar()
+            user_id = db.scalar(select(User.user_id).where(User.user_id == current_user.user_id))
+            if user_id is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            
+            # Create new preferences with proper type casting
             prefs = UserNotificationPreferences(
-                user_id=current_user.id,
+                user_id=int(user_id) if user_id is not None else 0,
                 email_enabled=True,
                 sms_enabled=True,
                 push_enabled=True,
-                email_notifications={e: True for e in SUPPORTED_EVENTS["email_notifications"]},
-                sms_notifications={e: True for e in SUPPORTED_EVENTS["sms_notifications"]},
-                push_notifications={e: True for e in SUPPORTED_EVENTS["push_notifications"]}
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
             )
             db.add(prefs)
             db.commit()
             db.refresh(prefs)
-
-        return NotificationPreferencesResponse(
-            user_id=current_user.id,
-            email=prefs.email_enabled,
-            sms=prefs.sms_enabled,
-            push=prefs.push_enabled
-        )
+        
+        # Ensure boolean values are properly typed
+        email_enabled = bool(prefs.email_enabled) if prefs.email_enabled is not None else False
+        sms_enabled = bool(prefs.sms_enabled) if prefs.sms_enabled is not None else False
+        push_enabled = bool(prefs.push_enabled) if prefs.push_enabled is not None else False
+        
+        return {
+            "email": {
+                "enabled": email_enabled,
+                "types": {
+                    notification_type: True
+                    for notification_type in NOTIFICATION_TYPES["email"]
+                }
+            },
+            "sms": {
+                "enabled": sms_enabled,
+                "types": {
+                    notification_type: True
+                    for notification_type in NOTIFICATION_TYPES["sms"]
+                }
+            },
+            "push": {
+                "enabled": push_enabled,
+                "types": {
+                    notification_type: True
+                    for notification_type in NOTIFICATION_TYPES["push"]
+                }
+            }
+        }
     except Exception as e:
-        print(f"Error getting notification preferences: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error getting notification preferences: {str(e)}"
-        )
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
-@users_router.put("/notifications/preferences/", response_model=NotificationPreferencesResponse)
+@users_router.put("/notifications/preferences")
 async def update_notification_preferences(
     preferences: NotificationPreferencesUpdate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Update notification preferences. When email is disabled, no emails will be sent.
-    When enabled, emails will be sent according to the preferences.
+    Update user notification preferences.
     """
     try:
-        print(f"Updating notification preferences for user {current_user.email}")
-        print(f"New preferences: {preferences}")
+        # Get existing preferences
+        stmt = select(UserNotificationPreferences).where(
+            UserNotificationPreferences.user_id == current_user.user_id
+        )
+        existing_prefs = db.execute(stmt).scalar_one_or_none()
         
-        # Get or create user preferences
-        prefs = db.query(UserNotificationPreferences).filter_by(user_id=current_user.id).first()
-        print(f"Current preferences before update: {prefs}")
-        
-        if not prefs:
-            # Create new preferences if they don't exist
-            prefs = UserNotificationPreferences(
-                user_id=current_user.id,
-                email_enabled=True,
-                sms_enabled=True,
-                push_enabled=True,
-                email_notifications={e: True for e in SUPPORTED_EVENTS["email_notifications"]},
-                sms_notifications={e: True for e in SUPPORTED_EVENTS["sms_notifications"]},
-                push_notifications={e: True for e in SUPPORTED_EVENTS["push_notifications"]}
+        if existing_prefs:
+            # Update existing preferences using update()
+            update_stmt = (
+                update(UserNotificationPreferences)
+                .where(UserNotificationPreferences.user_id == current_user.user_id)
+                .values({
+                    "email_enabled": bool(preferences.email_enabled),
+                    "sms_enabled": bool(preferences.sms_enabled),
+                    "push_enabled": bool(preferences.push_enabled),
+                    "updated_at": datetime.utcnow()
+                })
             )
-            db.add(prefs)
-
-        # Update main toggles and their corresponding notification settings
-        if preferences.email is not None:
-            print(f"Setting email_enabled to: {preferences.email}")
-            prefs.email_enabled = preferences.email
-            # When email is disabled, set all email notifications to False
-            if not preferences.email:
-                prefs.email_notifications = {e: False for e in SUPPORTED_EVENTS["email_notifications"]}
-            # When email is enabled, restore all email notifications to True
-            else:
-                prefs.email_notifications = {e: True for e in SUPPORTED_EVENTS["email_notifications"]}
-
-        if preferences.sms is not None:
-            print(f"Setting sms_enabled to: {preferences.sms}")
-            prefs.sms_enabled = preferences.sms
-            # Update all SMS notifications based on the main toggle
-            prefs.sms_notifications = {e: preferences.sms for e in SUPPORTED_EVENTS["sms_notifications"]}
-
-        if preferences.push is not None:
-            print(f"Setting push_enabled to: {preferences.push}")
-            prefs.push_enabled = preferences.push
-            # Update all push notifications based on the main toggle
-            prefs.push_notifications = {e: preferences.push for e in SUPPORTED_EVENTS["push_notifications"]}
-
-        prefs.updated_at = datetime.datetime.utcnow()
+            db.execute(update_stmt)
+        else:
+            # Create new preferences
+            user_id = db.scalar(select(User.user_id).where(User.user_id == current_user.user_id))
+            if user_id is None:
+                raise HTTPException(status_code=404, detail="User not found")
+                
+            # Cast SQLAlchemy Column type to Python type
+            user_id_int = int(user_id) if user_id is not None else None
+            if user_id_int is None:
+                raise HTTPException(status_code=404, detail="User not found")
+                
+            # Create new preferences with properly typed values
+            new_prefs = UserNotificationPreferences(
+                user_id=user_id_int,
+                email_enabled=bool(preferences.email_enabled),
+                sms_enabled=bool(preferences.sms_enabled),
+                push_enabled=bool(preferences.push_enabled),
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
+            )
+            db.add(new_prefs)
         
-        # Log the preference update
-        log = UserActivityLog(
-            user_id=current_user.id,
-            actor_id=current_user.id,
-            action="update_notification_preferences",
-            details=f"Updated notification preferences: email={preferences.email}, sms={preferences.sms}, push={preferences.push}",
-            timestamp=datetime.datetime.utcnow()
-        )
-        db.add(log)
-        
-        # Commit all changes
         db.commit()
-        db.refresh(prefs)
-        
-        print(f"Updated preferences: {prefs}")
-
-        # Return the updated preferences
-        return NotificationPreferencesResponse(
-            user_id=current_user.id,
-            email=prefs.email_enabled,
-            sms=prefs.sms_enabled,
-            push=prefs.push_enabled
-        )
-
+        return {"message": "Notification preferences updated successfully"}
     except Exception as e:
         db.rollback()
-        print(f"Error updating notification preferences: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error updating notification preferences: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=str(e))
 
-@users_router.get("/profile/", response_model=UserResponse)
-async def get_profile(
+@users_router.post(
+    "/feedback",
+    summary="Submit system feedback",
+    description="Submit feedback about the system",
+    response_model=SystemFeedbackResponse,
+    status_code=status.HTTP_201_CREATED
+)
+async def submit_feedback(
+    feedback: SystemFeedbackRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Get the current user's profile information.
-    """
+    """Submit feedback about the system."""
     try:
-        user = db.query(User).filter(User.id == current_user.id).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        # Convert user object to response format
-        response = UserResponse(
-            id=user.id,
-            email=user.email,
-            first_name=user.first_name,
-            last_name=user.last_name,
-            role=user.role.name if hasattr(user.role, "name") else str(user.role),
-            status=user.status,
-            phone_number=user.phone_number,
-            created_at=user.created_at,
-            updated_at=user.updated_at
+        # Create feedback object with proper field mapping
+        feedback_obj = SystemFeedback(
+            user_id=current_user.user_id,
+            category=feedback.category,
+            subject=feedback.subject,
+            description=feedback.description,
+            priority=feedback.priority,
+            status="PENDING",
+            submitted_at=datetime.utcnow(),
+            active=True
         )
+        
+        db.add(feedback_obj)
+        db.commit()
+        db.refresh(feedback_obj)
+        
+        # Convert to response model
+        response = SystemFeedbackResponse(
+            feedback_id=feedback_obj.__dict__['feedback_id'],
+            user_id=feedback_obj.__dict__['user_id'],
+            category=str(feedback_obj.category),
+            subject=str(feedback_obj.subject),
+            description=str(feedback_obj.description),
+            priority=str(feedback_obj.priority),
+            status=str(feedback_obj.status),
+            submitted_at=feedback_obj.__dict__['submitted_at'],
+            active=bool(feedback_obj.active)
+        )
+        
         return response
     except Exception as e:
-        print(f"Error getting profile: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error getting profile: {str(e)}")
-
-@users_router.post("/feedback/response/")
-async def submit_feedback_response(
-    feedback_data: FeedbackRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Submit a feedback response.
-    """
-    try:
-        feedback = Feedback(
-            user_id=current_user.id,
-            subject=feedback_data.subject,
-            message=feedback_data.description,
-            status="open"
-        )
-        db.add(feedback)
-        db.commit()
-        db.refresh(feedback)
-        return {
-            "id": feedback.id,
-            "message": "Feedback submitted successfully"
-        }
-    except Exception as e:
         db.rollback()
-        print(f"Error submitting feedback: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error submitting feedback: {str(e)}")
-
-@users_router.post("/tickets/create/")
-async def create_ticket(
-    ticket_data: SupportTicketCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Create a support ticket.
-    """
-    try:
-        feedback = Feedback(
-            user_id=current_user.id,
-            subject=ticket_data.subject,
-            message=ticket_data.description,
-            status="open"
-        )
-        db.add(feedback)
-        db.commit()
-        db.refresh(feedback)
-        return {
-            "id": feedback.id,
-            "message": "Support ticket created successfully"
-        }
-    except Exception as e:
-        db.rollback()
-        print(f"Error creating ticket: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error creating ticket: {str(e)}")
-
-@users_router.post("/test-email/")
-async def test_email_configuration(
-    to_email: EmailStr = Query(..., description="Email address to test with"),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Test endpoint to verify email configuration
-    """
-    try:
-        # Try to send a test email
-        test_subject = "Test Email Configuration"
-        test_body = "This is a test email to verify your SMTP configuration is working correctly."
-        
-        success = send_email(
-            to_email=to_email,
-            subject=test_subject,
-            plain_text=test_body
-        )
-        
-        if success:
-            return {
-                "status": "success",
-                "message": "Test email sent successfully! Please check your inbox.",
-                "email_settings": {
-                    "provider": os.getenv("MAIL_PROVIDER"),
-                    "server": os.getenv("MAIL_SERVER"),
-                    "port": os.getenv("MAIL_PORT"),
-                    "username": os.getenv("MAIL_USERNAME"),
-                    "from_address": os.getenv("MAIL_FROM_ADDRESS"),
-                    "from_name": os.getenv("MAIL_FROM_NAME")
-                }
-            }
-        else:
-            return {
-                "status": "error",
-                "message": "Failed to send test email. Check server logs for details.",
-                "email_settings": {
-                    "provider": os.getenv("MAIL_PROVIDER"),
-                    "server": os.getenv("MAIL_SERVER"),
-                    "port": os.getenv("MAIL_PORT"),
-                    "username": os.getenv("MAIL_USERNAME"),
-                    "from_address": os.getenv("MAIL_FROM_ADDRESS"),
-                    "from_name": os.getenv("MAIL_FROM_NAME")
-                }
-            }
-            
-    except Exception as e:
-        print(f"Error in test email: {str(e)}")
         raise HTTPException(
-            status_code=500,
-            detail=f"Error testing email configuration: {str(e)}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
         )
+
+@users_router.post("/tickets", response_model=SupportTicketResponse)
+async def create_support_ticket(
+    ticket: SupportTicketCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a support ticket
+    Purpose: Allow users to create support tickets for various issues
+    """
+    try:
+        # Get user_id using scalar()
+        user_id = db.scalar(select(User.user_id).where(User.user_id == current_user.user_id))
+        if user_id is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Create ticket with proper type casting
+        new_ticket = SupportTicket(
+            user_id=int(user_id) if user_id is not None else 0,
+            category=str(ticket.category) if ticket.category is not None else "",
+            subject=str(ticket.subject) if ticket.subject is not None else "",
+            description=str(ticket.description) if ticket.description is not None else "",
+            priority=str(ticket.priority) if ticket.priority is not None else "",
+            status="OPEN",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
+        )
+        db.add(new_ticket)
+        
+        # Create activity log with proper type casting
+        log = UserActivityLog(
+            user_id=int(user_id) if user_id is not None else 0,
+            actor_id=int(user_id) if user_id is not None else 0,
+            action="create_ticket",
+            details=f"Created support ticket: {ticket.subject}",
+            timestamp=datetime.utcnow()
+        )
+        db.add(log)
+        db.commit()
+        db.refresh(new_ticket)
+        
+        return new_ticket
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def _check_permission(current_user: User, permission_feature: str, db: Session) -> bool:
+    """Helper function to check permissions asynchronously."""
+    try:
+        # Get user roles using select()
+        stmt = select(UserRole).join(Role).where(
+            and_(
+                UserRole.user_id == current_user.user_id,
+                UserRole.active.is_(True)
+            )
+        )
+        user_roles = db.execute(stmt).scalars().all()
+        
+        # Check each role for the permission
+        for role in user_roles:
+            # Get role permissions using select()
+            perm_stmt = select(Permission).join(RolePermission).where(
+                and_(
+                    RolePermission.role_id == role.role_id,
+                    Permission.feature_name == permission_feature,
+                    Permission.active.is_(True)
+                )
+            )
+            permission = db.execute(perm_stmt).scalar_one_or_none()
+            
+            if permission is not None:
+                return True
+                
+        return False
+    except Exception as e:
+        print(f"Error checking permission: {str(e)}")
+        return False

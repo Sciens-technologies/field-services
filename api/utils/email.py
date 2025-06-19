@@ -23,7 +23,7 @@ MAIL_FROM_ADDRESS = os.getenv("MAIL_FROM_ADDRESS")
 MAIL_FROM_NAME    = os.getenv("MAIL_FROM_NAME", "")
 SENDGRID_API_KEY  = os.getenv("SENDGRID_API_KEY")
 
-def send_email(
+async def send_email(
     to_email: str,
     subject: str,
     plain_text: str,
@@ -45,7 +45,7 @@ def send_email(
         user = db.query(User).filter(User.email == to_email).first()
         if user:
             prefs = db.query(UserNotificationPreferences).filter_by(user_id=user.id).first()
-            if prefs and not prefs.email_enabled:
+            if prefs and not bool(prefs.email_enabled):
                 logger.info(f"Email not sent to {to_email} - notifications disabled")
                 return False
     
@@ -70,21 +70,21 @@ def send_email(
             
         try:
             # Create SendGrid message
-            from_email = Email(MAIL_FROM_ADDRESS, MAIL_FROM_NAME)
-            to_email = To(to_email)
+            from_email = Email(str(MAIL_FROM_ADDRESS), str(MAIL_FROM_NAME))
+            to_email_obj = To(to_email)
             content = Content("text/plain", plain_text)
-            mail = Mail(from_email, to_email, subject, content)
+            mail = Mail(from_email, to_email_obj, subject, content)
             
             # Add HTML content if provided
             if html_content:
                 mail.add_content(HtmlContent(html_content))
                 
             # Send email via SendGrid
-            sg = SendGridAPIClient(SENDGRID_API_KEY)
+            sg = SendGridAPIClient(str(SENDGRID_API_KEY))
             response = sg.send(mail)
             
             if response.status_code >= 200 and response.status_code < 300:
-                logger.info(f"Email sent successfully to {to_email.email} via SendGrid")
+                logger.info(f"Email sent successfully to {to_email} via SendGrid")
                 return True
             else:
                 logger.error(f"SendGrid API returned status code {response.status_code}")
@@ -103,7 +103,7 @@ def send_email(
     # Build the message container
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = f"{MAIL_FROM_NAME} <{MAIL_FROM_ADDRESS}>" if MAIL_FROM_NAME else MAIL_FROM_ADDRESS
+    msg["From"]    = f"{MAIL_FROM_NAME} <{MAIL_FROM_ADDRESS}>" if MAIL_FROM_NAME else str(MAIL_FROM_ADDRESS)
     msg["To"]      = to_email
 
     # Attach plain-text
@@ -114,13 +114,18 @@ def send_email(
 
     try:
         # Connect to SMTP server with timeout
-        with smtplib.SMTP(MAIL_SERVER, MAIL_PORT, timeout=10) as server:
+        if not MAIL_SERVER:
+            raise ValueError("MAIL_SERVER is not configured")
+            
+        with smtplib.SMTP(str(MAIL_SERVER), MAIL_PORT, timeout=10) as server:
             server.ehlo()
             server.starttls()
             server.ehlo()
-            server.login(MAIL_USERNAME, MAIL_PASSWORD)
+            if not MAIL_USERNAME or not MAIL_PASSWORD or not MAIL_FROM_ADDRESS:
+                raise ValueError("Email credentials not fully configured")
+            server.login(str(MAIL_USERNAME), str(MAIL_PASSWORD))
             server.sendmail(
-                MAIL_FROM_ADDRESS,
+                str(MAIL_FROM_ADDRESS),
                 to_email,
                 msg.as_string()
             )
@@ -140,25 +145,20 @@ def send_email(
         logger.error(f"Error sending email to {to_email}: {e}")
         return False
 
-def send_welcome_email(email: str, password: str, first_name: str, last_name: str = "") -> bool:
+async def send_welcome_email(email: str, username: str, first_name: str) -> bool:
     """
-    Sends a welcome email to a new user with their login credentials.
+    Sends a welcome email to a new user.
     Returns True if successful, False otherwise.
     """
-    subject = "Welcome to Field Service App - Your Account Details"
+    subject = "Welcome to Field Service App"
     
     # Create plain text email body
-    body = f"""Hello {first_name} {last_name},
+    body = f"""Hello {first_name},
 
 Welcome to Field Service App! Your account has been created.
 
-Here are your login details:
-Email: {email}
-Password: {password}
-
-Please log in at: https://yourapp.example.com/login
-
-For security reasons, we recommend changing your password after your first login.
+You can log in with your username: {username}
+Login URL: https://yourapp.example.com/login
 
 If you have any questions, please contact support.
 
@@ -166,7 +166,7 @@ Best regards,
 The Field Service App Team
 """
 
-    # Create HTML email body - simplified design
+    # Create HTML email body
     html_content = f"""
 <!DOCTYPE html>
 <html>
@@ -176,54 +176,48 @@ The Field Service App Team
     </div>
     
     <div style="padding: 20px; border: 1px solid #ddd;">
-        <p>Hello {first_name} {last_name},</p>
-        <p>Your account has been created. Here are your login details:</p>
+        <p>Hello {first_name},</p>
+        <p>Your account has been created successfully.</p>
         
         <div style="background-color: #f5f5f5; padding: 15px; margin: 15px 0; border-left: 4px solid #4a90e2;">
-            <p><strong>Email:</strong> {email}</p>
-            <p><strong>Password:</strong> {password}</p>
+            <p><strong>Username:</strong> {username}</p>
             <p><strong>Login URL:</strong> <a href="https://yourapp.example.com/login">https://yourapp.example.com/login</a></p>
         </div>
         
-        <p>For security reasons, we recommend changing your password after your first login.</p>
         <p>If you have any questions, please contact support.</p>
         
         <p>Best regards,<br>The Field Service App Team</p>
-    </div>
-    
-    <div style="font-size: 12px; color: #777; margin-top: 20px; text-align: center;">
-        <p>This is an automated message, please do not reply to this email.</p>
     </div>
 </body>
 </html>
 """
     
-    # Send the email using our local send_email function with ignore_preferences=True for welcome emails
-    return send_email(email, subject, body, html_content, ignore_preferences=True)
+    return await send_email(email, subject, body, html_content)
 
-def send_password_reset_email(to_email: str, reset_token: str, first_name: str, reset_link: str) -> bool:
+async def send_password_reset_email(email: str, username: str, reset_key: str) -> bool:
     """
-    Sends a password reset email with a reset link.
+    Sends a password reset email to the user.
+    Returns True if successful, False otherwise.
     """
+    reset_link = f"https://yourapp.example.com/reset-password?key={reset_key}"
     subject = "Password Reset Request - Field Service App"
     
-    # Plain text version
-    body = f"""Hello {first_name},
+    # Create plain text email body
+    body = f"""Hello {username},
 
 We received a request to reset your password for the Field Service App.
 
-Click here to reset your password: {reset_link}
-
-This link will expire in 24 hours.
+To reset your password, click on the following link:
+{reset_link}
 
 If you did not request a password reset, please ignore this email.
 
-Thank you,
-The Field Service Team
+Best regards,
+The Field Service App Team
 """
 
-    # HTML version - very simple with just a clear link
-    html = f"""
+    # Create HTML email body
+    html_content = f"""
 <!DOCTYPE html>
 <html>
 <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -232,70 +226,54 @@ The Field Service Team
     </div>
     
     <div style="padding: 20px; border: 1px solid #ddd;">
-        <p>Hello {first_name},</p>
+        <p>Hello {username},</p>
         <p>We received a request to reset your password for the Field Service App.</p>
         
-        <p style="text-align: center; margin: 30px 0;">
-            <a href="{reset_link}" style="background-color: #4a90e2; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">Click here to reset your password</a>
-        </p>
-        
-        <p>This link will expire in 24 hours.</p>
-        <p>If you did not request a password reset, please ignore this email.</p>
-        
-        <p>Thank you,<br>The Field Service Team</p>
-    </div>
-</body>
-</html>
-"""
-    
-    # Send the email with ignore_preferences=True for password reset emails
-    return send_email(to_email, subject, body, html, ignore_preferences=True)
-
-def send_temporary_password_email(user_data, generated_password) -> bool:
-    """
-    Sends an email with the temporary password to the user.
-    """
-    subject = "Your Field Service App Account Password"
-    message = f"""Hello {user_data.first_name},
-
-Your account has been created. Your temporary password is: {generated_password}
-
-Please log in and change your password.
-
-Best regards,
-The Field Service Team"""
-    
-    html_content = f"""
-<!DOCTYPE html>
-<html>
-<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <div style="background-color: #4a90e2; color: white; padding: 15px; text-align: center;">
-        <h2>Your Field Service App Account</h2>
-    </div>
-    
-    <div style="padding: 20px; border: 1px solid #ddd;">
-        <p>Hello {user_data.first_name},</p>
-        <p>Your account has been created.</p>
-        
-        <div style="background-color: #f5f5f5; padding: 15px; margin: 15px 0; border-left: 4px solid #4a90e2;">
-            <p><strong>Temporary Password:</strong> {generated_password}</p>
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{reset_link}" style="background-color: #4a90e2; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
+                Reset Your Password
+            </a>
         </div>
         
-        <p>Please log in and change your password.</p>
+        <p>If you did not request a password reset, please ignore this email.</p>
         
-        <p>Best regards,<br>The Field Service Team</p>
+        <p>Best regards,<br>The Field Service App Team</p>
     </div>
 </body>
 </html>
 """
     
-    # Send the email with ignore_preferences=True for temporary password emails
-    return send_email(
-        to_email=user_data.email,
+    return await send_email(email, subject, body, html_content)
+
+async def send_temporary_password_email(email_to: str, username: str, temp_password: str):
+    """
+    Send an email with temporary password to a newly created user.
+    
+    Args:
+        email_to (str): Recipient's email address
+        username (str): User's username
+        temp_password (str): Temporary password generated for the user
+    """
+    subject = "Your Field Services Account Credentials"
+    body = f"""
+    Welcome to Field Services!
+    
+    Your account has been created by an administrator.
+    
+    Here are your login credentials:
+    Username: {username}
+    Temporary Password: {temp_password}
+    
+    For security reasons, please change your password after your first login.
+    
+    Best regards,
+    Field Services Team
+    """
+    
+    return await send_email(
+        to_email=email_to,
         subject=subject,
-        plain_text=message,
-        html_content=html_content,
-        ignore_preferences=True  # Always send temporary password emails
+        plain_text=body
     )
 
 
