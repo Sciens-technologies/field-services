@@ -1,19 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException,Path,Query
+from fastapi import APIRouter, Depends, HTTPException,Path,Query,Body
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func,and_
 from datetime import datetime
 from db.database import get_db
-from db.models import Device, WorkOrder, User, DeviceStatus,WorkCentre,WorkOrderAssignment,DeviceAssignment
-from api.schemas import DeviceCreate, DeviceResponse,BlockDeviceRequest
+from db.models import Device, WorkOrder, User, DeviceStatus,WorkCentre,WorkOrderAssignment,DeviceAssignment,WorkOrderStatus
+from api.schemas import DeviceCreate, DeviceResponse,BlockDeviceRequest,DeactivateDevicePayload
 from api.services.users import get_current_user
 from typing import Optional
 from sqlalchemy import or_
+from api.utils.util import trigger_device_block_notification,user_is_agent
 device_router = APIRouter()
 
 # api/routers/device.py
-from datetime import datetime
+from datetime import datetime as dt
 from typing import List, Optional
-
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session, joinedload
 
@@ -27,6 +27,7 @@ from db.models import (
     WorkOrderAssignment,
     WorkCentre,
     User,
+    UserRole
 )
 from api.schemas   import (
     DeviceCreate,
@@ -72,6 +73,7 @@ def create_device(device: DeviceCreate, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Error creating device: {str(e)}")
+    
 @device_router.get("/", response_model=List[DeviceResponse])
 def list_devices(
     model: Optional[str] = Query(None),
@@ -118,28 +120,83 @@ def update_device(device_id: int, payload: DeviceUpdate, db: Session = Depends(g
     db.refresh(device)
     return _device_to_response(db, device)
 
-@device_router.post("/{device_id}/assign", response_model=DeviceAssignmentResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(admin_required)])
-def assign_device(device_id: int, payload: DeviceAssignmentCreate, db: Session = Depends(get_db)):
-    """
-    Assign a device to a user or a role.
-    """
-    if payload.user_id is None and payload.role is None:
-        raise HTTPException(400, detail="Provide either user_id or role")
+@device_router.post(
+    "/{device_id}/assign",
+    response_model=DeviceAssignmentResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(admin_required)],
+)
+def assign_device(
+    device_id: int,
+    payload: DeviceAssignmentCreate,
+    db: Session = Depends(get_db),
+):
+    # 1. Validate input
+    if not payload.user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
 
+    # 2. Check if device exists
+    device = db.query(Device).filter(Device.device_id == device_id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    # 3. Check if device is already assigned to someone (and active)
+    existing_assignment = db.query(DeviceAssignment).filter(
+        DeviceAssignment.device_id == device_id,
+        DeviceAssignment.active == True
+    ).first()
+
+    if existing_assignment:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Device {device_id} is already assigned to another user."
+        )
+
+    # 4. Check if user already has a device assigned
+    user_has_device = db.query(DeviceAssignment).filter(
+        DeviceAssignment.user_id == payload.user_id,
+        DeviceAssignment.active == True
+    ).first()
+
+    if user_has_device:
+        raise HTTPException(
+            status_code=400,
+            detail=f"User {payload.user_id} already has a device assigned."
+        )
+
+    # 5. Load user with roles
+    user = (
+        db.query(User)
+        .options(joinedload(User.roles).joinedload("role"))
+        .filter(User.user_id == payload.user_id)
+        .first()
+    )
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not user_is_agent(user):
+        raise HTTPException(
+            status_code=400,
+            detail="Devices can only be assigned to AGENT users"
+        )
+
+    # 6. Assign the device
     assignment = DeviceAssignment(
         device_id=device_id,
         user_id=payload.user_id,
-        role=payload.role,
+        role="AGENT",
         assigned_by_user_id=payload.assigned_by_user_id,
         assigned_by_role=payload.assigned_by_role,
         status="ASSIGNED",
         active=True,
+        assigned_at=datetime.utcnow()
     )
+
     db.add(assignment)
     db.commit()
     db.refresh(assignment)
-    return assignment
 
+    return assignment
 @device_router.get("/{device_id}/assignments", response_model=List[DeviceAssignmentResponse])
 def list_assignments(device_id: int, db: Session = Depends(get_db)):
     """
@@ -180,6 +237,7 @@ def change_device_status(
     db.add(audit)
     db.commit()
 
+
 @device_router.patch("/{device_id}/block", status_code=200,
                      dependencies=[Depends(admin_required)])
 def block_or_unblock_device(
@@ -188,22 +246,21 @@ def block_or_unblock_device(
     db: Session = Depends(get_db),
     current_admin: User = Depends(admin_required),
 ):
-    """
-    Toggle a device between **ACTIVE** and **BLOCKED**.
-
-    * Only an authenticated *admin* (checked by `admin_required`) may call this
-      endpoint.
-    * A short audit record is written each time the status changes.
-    """
-
-    
-    device = db.query(Device).filter(Device.device_id == device_id).first()
+    # 1. Fetch device
+    device = (
+        db.query(Device)
+        .filter(Device.device_id == device_id)
+        .first()
+    )
     if device is None:
         raise HTTPException(status_code=404, detail="Device not found")
 
-  
-    target_status = "BLOCKED" if request.block else "ACTIVE"
+    print("[DEBUG] Block request received for device_id =", device.device_id)
+    print("[DEBUG] Device status before =", device.status)
+    print("[DEBUG] Request block flag =", request.block)
 
+    # 2. Determine target status
+    target_status = "BLOCKED" if request.block else "ACTIVE"
     if device.status == target_status:
         return {
             "message": f"Device already {device.status.lower()}",
@@ -211,26 +268,183 @@ def block_or_unblock_device(
             "status": device.status,
         }
 
+    # 3. Audit
     audit = DeviceStatusAudit(
-        device_id         = device.device_id,
-        status_before     = device.status,
-        status_after      = target_status,
-        reason            = request.reason,
-        changed_by_user_id= current_admin.user_id,
+        device_id=device.device_id,
+        status_before=device.status,
+        status_after=target_status,
+        reason=request.reason,
+        changed_by_user_id=current_admin.user_id,
     )
     db.add(audit)
 
-    device.status     = target_status
+    # 4. Update device
+    device.status = target_status
     device.updated_at = datetime.utcnow()
-
     db.commit()
     db.refresh(device)
 
+    # 5. Trigger notification
+    if target_status == "BLOCKED":
+        try:
+            trigger_device_block_notification(
+                db=db,
+                device=device,
+                reason=request.reason,
+                admin_user=current_admin,
+            )
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            print(f"[WARN] Notification failed: {exc}")
+
+    # 6. Response
     return {
-        "message": f"Device status updated to {device.status}",
+        "message": (
+            "Device blocked successfully."
+            if request.block else
+            "Device unblocked successfully."
+        ),
         "device_id": device.device_id,
-        "status": device.status,
+        "timestamp": audit.changed_at.isoformat(),
+        "reason": request.reason,
     }
+
+@device_router.post(
+    "/{device_id}/deactivate",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(admin_required)],
+)
+def deactivate_device(
+    device_id: int,
+    reason: str = Query("", max_length=500),
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(admin_required),
+):
+    device = db.query(Device).filter(Device.device_id == device_id).first()
+    if not device:
+        raise HTTPException(404, detail="Device not found")
+
+    if device.status == DeviceStatus.DEACTIVATED:
+        return {"message": "Device already deactivated"}
+
+    audit = DeviceStatusAudit(
+        device_id=device.device_id,
+        status_before=device.status,
+        status_after=DeviceStatus.DEACTIVATED,
+        reason=reason,
+        changed_by_user_id=current_admin.user_id,
+    )
+    db.add(audit)
+
+    device.status = DeviceStatus.DEACTIVATED.value
+    device.active = False
+    device.updated_at = datetime.utcnow()
+
+    open_wos = (
+        db.query(WorkOrder)
+        .filter(
+            WorkOrder.device_id == device_id,
+            WorkOrder.status.in_([
+                WorkOrderStatus.PENDING.value,
+                WorkOrderStatus.IN_PROGRESS.value
+            ])
+        )
+        .all()
+    )
+
+    pending_work_orders = [
+        {
+            "work_order_id": wo.work_order_id,
+            "wo_number": wo.wo_number,
+            "status": wo.status
+        }
+        for wo in open_wos
+    ]
+    db.query(DeviceAssignment).filter(
+        DeviceAssignment.device_id == device_id,
+        DeviceAssignment.active == True
+    ).update(
+        {
+            DeviceAssignment.active: False,
+            DeviceAssignment.unassigned_at: datetime.utcnow(),
+            DeviceAssignment.status: "UNASSIGNED"
+        },
+        synchronize_session="fetch"
+    )
+    available_devices = db.query(Device).filter(
+        Device.device_id != device_id,
+        Device.active == True,
+        Device.status == DeviceStatus.ACTIVE.value
+    ).all()
+
+    available_devices_response = [
+    {
+        "device_id": d.device_id,
+        "serial_number": d.serial_number
+    }
+    for d in available_devices
+]
+    db.commit()
+    return {
+        "message": f"Device {device_id} deactivated successfully.",
+        "pending_work_orders": pending_work_orders,
+        "available_devices": available_devices_response
+    }
+
+
+@device_router.post("/{device_id}/activate", status_code=200, dependencies=[Depends(admin_required)])
+def activate_device(
+    device_id: int,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(admin_required)
+):
+    device = db.query(Device).filter(Device.device_id == device_id).first()
+    if not device:
+        raise HTTPException(404, detail="Device not found")
+
+    if device.status == DeviceStatus.ACTIVE:
+        return {"message": "Device is already active"}
+
+    if device.status != DeviceStatus.DEACTIVATED:
+        raise HTTPException(400, detail="Only deactivated devices can be activated")
+
+    # Optional: validate assignments or health logs here
+
+    # Update status
+    device.status = DeviceStatus.ACTIVE
+    device.active = True
+    device.updated_at = datetime.utcnow()
+
+    # Log audit
+    audit = DeviceStatusAudit(
+        device_id=device.device_id,
+        status_before=device.status,
+        status_after=DeviceStatus.ACTIVE,
+        changed_by_user_id=current_admin.user_id,
+        reason="Manual reactivation"
+    )
+    db.add(audit)
+
+    db.commit()
+
+    return {"message": f"Device {device_id} activated successfully"}
+
+@device_router.post("/{device_id}/admin-approve", status_code=200, dependencies=[Depends(admin_required)])
+def approve_device_by_admin(device_id: int, db: Session = Depends(get_db)):
+    device = db.query(Device).filter(Device.device_id == device_id).first()
+    if not device:
+        raise HTTPException(404, "Device not found")
+
+    if device.status != DeviceStatus.REGISTERED:
+        raise HTTPException(400, detail="Only REGISTERED devices can be approved")
+
+    device.status = DeviceStatus.READY_TO_ACTIVATE
+    device.admin_approved_at = datetime.utcnow()
+    db.commit()
+    return {"message": f"Device {device_id} approved by admin and ready to activate."}
+
+
 
 def _device_to_response(db: Session, device: Device, work_order_count: int = 0) -> DeviceResponse:
     return DeviceResponse(

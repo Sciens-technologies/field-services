@@ -80,6 +80,7 @@ async def deactivate_user(
         db.rollback()
         print(f"Error deactivating user: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error deactivating user: {str(e)}")
+    
 @admin_router.post("/users/{user_id}/reactivate/", dependencies=[Depends(admin_required)])
 async def reactivate_user(
     user_id: int,

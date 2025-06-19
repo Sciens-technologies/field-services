@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Enum as SQLAlchemyEnum, DECIMAL, JSON, BigInteger,
+    Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Enum as SQLAlchemyEnum, DECIMAL, JSON, BigInteger,func
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
@@ -41,6 +41,9 @@ class DeviceStatus(str, Enum):
     OUT_OF_SERVICE = "OUT_OF_SERVICE"
     ACTIVE             = "ACTIVE"         
     BLOCKED            = "BLOCKED" 
+    DEACTIVATED = "DEACTIVATED"
+    READY_TO_ACTIVATE = "READY_TO_ACTIVATE"
+    
 
 class DeviceSourceType(str, Enum):
     PURCHASED = "PURCHASED"
@@ -137,6 +140,18 @@ class UserNotification(Base):
     # Relationships
     user = relationship("User", back_populates="notifications")
     template = relationship("NotificationTemplate")
+
+class ArtifactNotificationEvent(Base):
+    __tablename__ = "artifact_notification_events"
+
+    event_id           = Column(BigInteger, primary_key=True, index=True)
+    template_id        = Column(BigInteger, ForeignKey("notification_templates.template_id"), nullable=False)
+    initiated_by       = Column(BigInteger, ForeignKey("users.user_id"))
+    notification_scope = Column(String(20), default="INDIVIDUAL")
+    target_type        = Column(String(20))          # USER / ROLE / SEGMENT
+    target_value       = Column(String(255))         # id or group code
+    custom_metadata    = Column(JSON)
+    created_at         = Column(DateTime, server_default=func.now())
 
 class UserAuthProvider(Base):
     __tablename__ = "user_auth_providers"
@@ -425,6 +440,7 @@ class WorkOrder(Base):
     __tablename__ = "work_orders"
 
     work_order_id = Column(BigInteger, primary_key=True)
+    device_id = Column(Integer, ForeignKey("devices.device_id"))
     wo_number = Column(String(100), unique=True, nullable=False)
     title = Column(String(255))
     description = Column(Text)

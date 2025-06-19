@@ -1182,3 +1182,14 @@ class DeviceHealthLogResponse(DeviceHealthLogBase):
     logged_at: datetime
     status: Optional[str] = None
     active: bool
+
+
+class DeactivateDevicePayload(BaseModel):
+    """
+    Request body schema for the deactivate‑device endpoint.
+    * `reason` – (optional) free‑text audit note, max 500 chars
+    * `reassign_to_device_id` – (optional) id of the device that will take over
+      all pending / in‑progress work‑orders from the device being deactivated
+    """
+    reason: str = ""
+    reassign_to_device_id: Optional[int] = None
