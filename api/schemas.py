@@ -12,6 +12,7 @@ class UserStatus(str, Enum):
     INACTIVE = "INACTIVE"
     BLOCKED = "BLOCKED"
     DELETED = "DELETED"
+    DEACTIVATED = "DEACTIVATED"
 
 class WorkOrderStatus(str, Enum):
     PENDING = "PENDING"
@@ -35,8 +36,11 @@ class RequestType(str, Enum):
 
 class DeviceStatus(str, Enum):
     REGISTERED = "REGISTERED"
-    ACTIVE = "ACTIVE"
-    BLOCKED = "BLOCKED"
+    UNREGISTERED = "UNREGISTERED"
+    IN_SERVICE = "IN_SERVICE"
+    OUT_OF_SERVICE = "OUT_OF_SERVICE"
+    ACTIVE             = "ACTIVE"         
+    BLOCKED            = "BLOCKED" 
     DEACTIVATED = "DEACTIVATED"
     READY_TO_ACTIVATE = "READY_TO_ACTIVATE"
 
@@ -61,6 +65,7 @@ class DeviceAssignmentRole(str, Enum):
     MANAGER = "MANAGER"
     ADMIN = "ADMIN"
     WAREHOUSE = "WAREHOUSE"
+    AGENT = "AGENT"
     OTHER = "OTHER"
 
 # --- Base Schemas ---
@@ -188,11 +193,16 @@ class UserResponse(BaseSchema):
     status: str
     created_at: datetime
     updated_at: datetime
+    password_hash: Optional[str] = None  # Include plain text password in response
 
     class Config:
         json_encoders = {
             datetime: lambda dt: dt.isoformat()
         }
+
+class ExistingUserResponse(BaseModel):
+    message: str
+    existing_user: dict
 
 # --- Role Schemas ---
 class PermissionBase(BaseSchema):
@@ -269,6 +279,7 @@ class DeviceResponse(DeviceBase):
     created_at: datetime
     updated_at: datetime
     active: bool
+    work_order_count: int = 0
 
 class DeviceArtifactBase(BaseSchema):
     device_id: int
@@ -299,13 +310,10 @@ class DeviceArtifactResponse(DeviceArtifactBase):
     created_at: datetime
 
 class DeviceAssignmentBase(BaseSchema):
-    device_id: int
     user_id: Optional[int] = None
-    role: Optional[DeviceAssignmentRole] = None
 
 class DeviceAssignmentCreate(DeviceAssignmentBase):
-    assigned_by_user_id: Optional[int] = None
-    assigned_by_role: Optional[DeviceAssignmentRole] = None
+    pass
 
 class DeviceAssignmentUpdate(BaseSchema):
     user_id: Optional[int] = None
@@ -323,8 +331,11 @@ class DeviceAssignmentResponse(DeviceAssignmentBase):
     unassigned_at: Optional[datetime] = None
     status: Optional[str] = None
     active: bool
-    updated_at: Optional[datetime] = None
 
+class BlockDeviceRequest(BaseModel):
+    block: bool                # True  ➜ set status to "BLOCKED"
+    reason: Optional[str] = ""
+    
 # --- Work Order Schemas ---
 class WorkOrderBase(BaseSchema):
     wo_number: str
@@ -1153,3 +1164,7 @@ class WorkOrderDetailResponse(BaseModel):
     active: bool
     assignments: List[WorkOrderAssignmentResponse]
     status_logs: List[WorkOrderStatusLogResponse]
+
+class DeactivateDevicePayload(BaseModel):
+    reason: str
+    remarks: Optional[str] = None

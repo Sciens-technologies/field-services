@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Enum as SQLAlchemyEnum, DECIMAL, JSON, BigInteger
+    Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Enum as SQLAlchemyEnum, DECIMAL, JSON, BigInteger,func
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
@@ -8,7 +8,7 @@ from enum import Enum
 from db.database import Base
 from sqlalchemy.ext.hybrid import hybrid_property
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # --- Enums ---
 class UserStatus(str, Enum):
@@ -42,6 +42,11 @@ class DeviceStatus(str, Enum):
     UNREGISTERED = "UNREGISTERED"
     IN_SERVICE = "IN_SERVICE"
     OUT_OF_SERVICE = "OUT_OF_SERVICE"
+    ACTIVE = "ACTIVE"         
+    BLOCKED = "BLOCKED"
+    DEACTIVATED = "DEACTIVATED"
+    READY_TO_ACTIVATE = "READY_TO_ACTIVATE"
+    
 
 class DeviceSourceType(str, Enum):
     PURCHASED = "PURCHASED"
@@ -66,7 +71,7 @@ class User(Base):
     uuid = Column(String(75), unique=True)
     username = Column(String(100), unique=True, nullable=False)
     email = Column(String(150), unique=True, nullable=False)
-    password_hash = Column(String(100), nullable=False)
+    password_hash = Column(String(100), nullable=False)  # Will store plain text password
     
     first_name = Column(String(50))
     last_name = Column(String(50))
@@ -226,6 +231,18 @@ class UserNotification(Base):
     user = relationship("User", back_populates="notifications")
     template = relationship("NotificationTemplate")
 
+class ArtifactNotificationEvent(Base):
+    __tablename__ = "artifact_notification_events"
+
+    event_id           = Column(BigInteger, primary_key=True, index=True)
+    template_id        = Column(BigInteger, ForeignKey("notification_templates.template_id"), nullable=False)
+    initiated_by       = Column(BigInteger, ForeignKey("users.user_id"))
+    notification_scope = Column(String(20), default="INDIVIDUAL")
+    target_type        = Column(String(20))          # USER / ROLE / SEGMENT
+    target_value       = Column(String(255))         # id or group code
+    custom_metadata    = Column(JSON)
+    created_at         = Column(DateTime, server_default=func.now())
+
 class UserAuthProvider(Base):
     __tablename__ = "user_auth_providers"
 
@@ -384,24 +401,22 @@ class Token(Base):
 class Device(Base):
     __tablename__ = "devices"
 
-    device_id = Column(BigInteger, primary_key=True)
-    serial_number = Column(String(100), unique=True)
-    model = Column(String(100))
-    status = Column(SQLAlchemyEnum(DeviceStatus), default=DeviceStatus.REGISTERED)
+    device_id = Column(Integer, primary_key=True)
+    serial_number = Column(String)
+    model = Column(String)
+    status = Column(String)
+    updated_at = Column(DateTime)
+    active = Column(Boolean)
     last_communication = Column(DateTime)
     location = Column(String(100))
     work_center_id = Column(BigInteger, ForeignKey("work_centres.work_centre_id"))
     created_at = Column(DateTime, default=dt.datetime.utcnow)
-    updated_at = Column(DateTime, default=dt.datetime.utcnow)
-    active = Column(Boolean, default=True)
-
-    # Relationships
-    work_center = relationship("WorkCentre", back_populates="devices")
+    work_centre = relationship("WorkCentre", back_populates="devices")
     artifacts = relationship("DeviceArtifact", back_populates="device")
     assignments = relationship("DeviceAssignment", back_populates="device")
     health_logs = relationship("DeviceHealthLog", back_populates="device")
     status_audits = relationship("DeviceStatusAudit", back_populates="device")
-
+    
 class DeviceArtifact(Base):
     __tablename__ = "device_artifacts"
 
@@ -435,7 +450,6 @@ class DeviceAssignment(Base):
     unassigned_at = Column(DateTime)
     status = Column(String(50))
     active = Column(Boolean, default=True)
-    updated_at = Column(DateTime, default=dt.datetime.utcnow)
 
     # Relationships
     device = relationship("Device", back_populates="assignments")
@@ -506,7 +520,7 @@ class WorkCentre(Base):
     updated_by = Column(BigInteger, ForeignKey("users.user_id"))
 
     # Relationships
-    devices = relationship("Device", back_populates="work_center")
+    devices = relationship("Device", back_populates="work_centre")
     created_by_user = relationship("User", foreign_keys=[created_by])
     updated_by_user = relationship("User", foreign_keys=[updated_by])
 
@@ -514,6 +528,7 @@ class WorkOrder(Base):
     __tablename__ = "work_orders"
 
     work_order_id = Column(BigInteger, primary_key=True)
+    device_id = Column(Integer, ForeignKey("devices.device_id"))
     wo_number = Column(String(100), unique=True, nullable=False)
     title = Column(String(255))
     description = Column(Text)

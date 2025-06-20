@@ -1,7 +1,9 @@
 from fastapi import Depends, FastAPI, HTTPException, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, EmailStr
-
+from api.schemas import DeviceResponse
+from sqlalchemy.orm import Session
+from sqlalchemy import desc
 from passlib.hash import bcrypt  # For password hashing
 import jwt  # PyJWT for token-based authentication
 from pydantic import ValidationError
@@ -13,9 +15,9 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Any, Dict, Optional
 from dotenv import load_dotenv
-
+from datetime import datetime
 from db.database import SessionLocal
-from db.models import NotificationHistory
+from db.models import NotificationHistory,NotificationTemplate,ArtifactNotificationEvent,UserNotification,Device,User,DeviceAssignment
 import secrets
 import string
 
@@ -46,7 +48,17 @@ def send_email(to_email: str, subject: str, body: str, html_content: Optional[st
     mail_password = os.getenv("MAIL_PASSWORD")
     mail_from_address = os.getenv("MAIL_FROM_ADDRESS")
     mail_from_name = os.getenv("MAIL_FROM_NAME", "")
-    
+
+    # Ensure required variables are not None
+    if mail_server is None:
+        raise RuntimeError("MAIL_SERVER environment variable is not set")
+    if mail_username is None:
+        raise RuntimeError("MAIL_USERNAME environment variable is not set")
+    if mail_password is None:
+        raise RuntimeError("MAIL_PASSWORD environment variable is not set")
+    if mail_from_address is None:
+        raise RuntimeError("MAIL_FROM_ADDRESS environment variable is not set")
+
     # Build the message container
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -150,3 +162,9 @@ def generate_random_password(length: int = 12) -> str:
     secrets.SystemRandom().shuffle(password_list)
     
     return ''.join(password_list)
+
+def trigger_device_block_notification(db, device, reason, admin_user):
+    pass
+
+def user_is_agent(user):
+    return True

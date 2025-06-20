@@ -151,47 +151,8 @@ async def send_welcome_email(email: str, username: str, first_name: str) -> bool
     Returns True if successful, False otherwise.
     """
     subject = "Welcome to Field Service App"
-    
-    # Create plain text email body
-    body = f"""Hello {first_name},
-
-Welcome to Field Service App! Your account has been created.
-
-You can log in with your username: {username}
-Login URL: https://yourapp.example.com/login
-
-If you have any questions, please contact support.
-
-Best regards,
-The Field Service App Team
-"""
-
-    # Create HTML email body
-    html_content = f"""
-<!DOCTYPE html>
-<html>
-<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <div style="background-color: #4a90e2; color: white; padding: 15px; text-align: center;">
-        <h2>Welcome to Field Service App!</h2>
-    </div>
-    
-    <div style="padding: 20px; border: 1px solid #ddd;">
-        <p>Hello {first_name},</p>
-        <p>Your account has been created successfully.</p>
-        
-        <div style="background-color: #f5f5f5; padding: 15px; margin: 15px 0; border-left: 4px solid #4a90e2;">
-            <p><strong>Username:</strong> {username}</p>
-            <p><strong>Login URL:</strong> <a href="https://yourapp.example.com/login">https://yourapp.example.com/login</a></p>
-        </div>
-        
-        <p>If you have any questions, please contact support.</p>
-        
-        <p>Best regards,<br>The Field Service App Team</p>
-    </div>
-</body>
-</html>
-"""
-    
+    body = f"""Hello {first_name},\n\nWelcome to Field Service App! Your account has been created.\n\nYou can log in with your username: {username}\nLogin URL: https://yourapp.example.com/login\n\nIf you have any questions, please contact support.\n\nBest regards,\nThe Field Service App Team\n"""
+    html_content = f"""\n<!DOCTYPE html>\n<html>\n<body style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;\">\n    <div style=\"background-color: #4a90e2; color: white; padding: 15px; text-align: center;\">\n        <h2>Welcome to Field Service App!</h2>\n    </div>\n    \n    <div style=\"padding: 20px; border: 1px solid #ddd;\">\n        <p>Hello {first_name},</p>\n        <p>Your account has been created successfully.</p>\n        \n        <div style=\"background-color: #f5f5f5; padding: 15px; margin: 15px 0; border-left: 4px solid #4a90e2;\">\n            <p><strong>Username:</strong> {username}</p>\n            <p><strong>Login URL:</strong> <a href=\"https://yourapp.example.com/login\">https://yourapp.example.com/login</a></p>\n        </div>\n        \n        <p>If you have any questions, please contact support.</p>\n        \n        <p>Best regards,<br>The Field Service App Team</p>\n    </div>\n</body>\n</html>\n"""
     return await send_email(email, subject, body, html_content)
 
 async def send_password_reset_email(email: str, username: str, reset_key: str) -> bool:
@@ -201,48 +162,8 @@ async def send_password_reset_email(email: str, username: str, reset_key: str) -
     """
     reset_link = f"https://yourapp.example.com/reset-password?key={reset_key}"
     subject = "Password Reset Request - Field Service App"
-    
-    # Create plain text email body
-    body = f"""Hello {username},
-
-We received a request to reset your password for the Field Service App.
-
-To reset your password, click on the following link:
-{reset_link}
-
-If you did not request a password reset, please ignore this email.
-
-Best regards,
-The Field Service App Team
-"""
-
-    # Create HTML email body
-    html_content = f"""
-<!DOCTYPE html>
-<html>
-<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <div style="background-color: #4a90e2; color: white; padding: 15px; text-align: center;">
-        <h2>Password Reset Request</h2>
-    </div>
-    
-    <div style="padding: 20px; border: 1px solid #ddd;">
-        <p>Hello {username},</p>
-        <p>We received a request to reset your password for the Field Service App.</p>
-        
-        <div style="text-align: center; margin: 30px 0;">
-            <a href="{reset_link}" style="background-color: #4a90e2; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
-                Reset Your Password
-            </a>
-        </div>
-        
-        <p>If you did not request a password reset, please ignore this email.</p>
-        
-        <p>Best regards,<br>The Field Service App Team</p>
-    </div>
-</body>
-</html>
-"""
-    
+    body = f"""Hello {username},\n\nWe received a request to reset your password for the Field Service App.\n\nTo reset your password, click on the following link:\n{reset_link}\n\nIf you did not request a password reset, please ignore this email.\n\nBest regards,\nThe Field Service App Team\n"""
+    html_content = f"""\n<!DOCTYPE html>\n<html>\n<body style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;\">\n    <div style=\"background-color: #4a90e2; color: white; padding: 15px; text-align: center;\">\n        <h2>Password Reset Request</h2>\n    </div>\n    \n    <div style=\"padding: 20px; border: 1px solid #ddd;\">\n        <p>Hello {username},</p>\n        <p>We received a request to reset your password for the Field Service App.</p>\n        \n        <div style=\"text-align: center; margin: 30px 0;\">\n            <a href=\"{reset_link}\" style=\"background-color: #4a90e2; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;\">\n                Reset Your Password\n            </a>\n        </div>\n        \n        <p>If you did not request a password reset, please ignore this email.</p>\n        <p>Best regards,<br>The Field Service App Team</p>\n    </div>\n</body>\n</html>\n"""
     return await send_email(email, subject, body, html_content)
 
 async def send_temporary_password_email(email_to: str, username: str, temp_password: str):
@@ -275,21 +196,3 @@ async def send_temporary_password_email(email_to: str, username: str, temp_passw
         subject=subject,
         plain_text=body
     )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

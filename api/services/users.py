@@ -8,9 +8,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import expression
 from sqlalchemy.sql.elements import BinaryExpression
 from fastapi import Depends, HTTPException, status, Request
-from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import  HTTPBearer, HTTPAuthorizationCredentials
 import jwt
 import os
+import logging
+logger = logging.getLogger(__name__)
 from dotenv import load_dotenv
 import json
 from pydantic import parse_obj_as
@@ -36,8 +38,7 @@ JWT_ALGORITHM = "HS256"
 JWT_ACCESS_TOKEN_EXPIRES_IN = timedelta(seconds=int(os.getenv("JWT_ACCESS_TOKEN_EXPIRES_IN", "86400")))  # 24 hours
 JWT_REFRESH_TOKEN_EXPIRES_IN = timedelta(seconds=int(os.getenv("JWT_REFRESH_TOKEN_EXPIRES_IN", "2592000")))  # 30 days
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/login")
-security = HTTPBearer(auto_error=False)
+security = HTTPBearer()
 
 async def get_user_by_email(db: Session, email: str) -> Optional[User]:
     result = db.execute(
@@ -127,30 +128,24 @@ async def decode_jwt_token(token: str) -> Dict[str, Any]:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 async def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ) -> User:
-    """Get the current authenticated user with debug logging."""
+    token = credentials.credentials
     try:
         print(f"\n=== User Authentication Debug ===")
         print(f"Received token: {token[:20]}...")
-        
         payload = await decode_jwt_token(token)
         print(f"Decoded payload: {payload}")
-        
         user_id: Optional[int] = payload.get("sub")
         if user_id is None:
             print("No user_id in token payload")
             raise HTTPException(status_code=401, detail="Invalid authentication credentials")
-        
-        # Use select() for better query construction
         stmt = select(User).where(User.user_id == user_id)
         user = db.execute(stmt).scalar_one_or_none()
-        
         if user is None:
             print(f"User not found for id: {user_id}")
             raise HTTPException(status_code=401, detail="User not found")
-        
         # Check user roles using SQLAlchemy expressions
         role_stmt = select(UserRole).join(Role).where(
             and_(
@@ -201,7 +196,7 @@ async def get_current_user_optional(
         if scheme.lower() != "bearer":
             return None
         
-        return await get_current_user(token=token, db=db)
+        return await get_current_user(credentials=HTTPAuthorizationCredentials(scheme=scheme, credentials=token), db=db)
     except Exception:
         return None
 
@@ -519,6 +514,7 @@ def user_to_response(user: User, db: Session) -> Dict[str, Any]:
             "status": user.status_value,
             "created_at": user.created_at_value,
             "updated_at": user.updated_at_value,
+            "password_hash": user.password_hash,  # Use password_hash field
             "roles": role_names  # Always include roles
         }
         

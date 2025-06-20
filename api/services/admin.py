@@ -46,6 +46,7 @@ async def get_user_by_uuid_admin(user_uuid: str, db: Session, current_user: User
     user = db.execute(stmt).scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+<<<<<<< HEAD
     return user
 
 async def update_user_status(user_uuid: str, status: UserStatus, db: Session, current_user: User) -> dict:
@@ -164,3 +165,8 @@ async def unblock_user(user_uuid: str, db: Session, current_user: User) -> dict:
     
     return {"detail": "User unblocked successfully"}
 
+=======
+    user.status = "blocked"
+    db.commit()
+    return {"detail": "User blocked"}
+>>>>>>> device_management

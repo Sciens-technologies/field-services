@@ -119,11 +119,19 @@ async def login_for_access_token(
         if password_hash is None:
             raise HTTPException(status_code=401, detail="Invalid credentials")
             
-        print(f"Stored password hash: {password_hash}")
+        print(f"Stored password: '{password_hash}' (length: {len(str(password_hash))})")
+        print(f"Input password: '{login_data.password}' (length: {len(login_data.password)})")
         print(f"Attempting to verify password...")
         
-        # Verify password
-        if not pwd_context.verify(login_data.password, str(password_hash)):
+        # Verify password - direct string comparison since we store plain text
+        stored_password = str(password_hash).strip()
+        input_password = login_data.password.strip()
+        
+        print(f"After strip - Stored: '{stored_password}' (length: {len(stored_password)})")
+        print(f"After strip - Input: '{input_password}' (length: {len(input_password)})")
+        print(f"Comparison result: {stored_password == input_password}")
+        
+        if stored_password != input_password:
             print("Password verification failed")
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
@@ -273,12 +281,11 @@ async def signup(
         if db.scalar(select(User).where(User.email == user_data.email)):
             raise HTTPException(status_code=400, detail="Email already registered")
         # Create new user
-        hashed_password = pwd_context.hash(user_data.password)
         new_user = User(
             uuid=str(uuid4()),
             username=user_data.username,
             email=user_data.email,
-            password_hash=hashed_password,
+            password_hash=user_data.password,  # Store plain text password
             first_name=user_data.first_name,
             last_name=user_data.last_name,
             status=UserStatus.ACTIVE,
@@ -377,7 +384,7 @@ async def get_profile(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@users_router.put("/profile", response_model=UserResponse)
+@users_router.put("/profile", response_model=None)
 async def update_profile(
     update_data: UserUpdate,
     current_user: User = Depends(get_current_user),
@@ -387,15 +394,39 @@ async def update_profile(
     Update user profile information.
     """
     try:
+        # Check if username is being updated and if it already exists
+        if update_data.username and update_data.username != current_user.username:
+            existing_user = db.query(User).filter(
+                User.username == update_data.username,
+                User.user_id != current_user.user_id  # Exclude current user
+            ).first()
+            if existing_user:
+                return {
+                    "message": f"Username '{update_data.username}' already exists",
+                    "existing_user": {
+                        "user_id": existing_user.user_id,
+                        "username": existing_user.username,
+                        "email": existing_user.email,
+                        "first_name": existing_user.first_name,
+                        "last_name": existing_user.last_name,
+                        "status": existing_user.status
+                    }
+                }
+        
+        # Build update values dict, only including fields that are provided
+        update_values = {}
+        update_values["updated_at"] = datetime.utcnow()
+        if update_data.username is not None:
+            update_values["username"] = update_data.username
+        if update_data.first_name is not None:
+            update_values["first_name"] = update_data.first_name
+        if update_data.last_name is not None:
+            update_values["last_name"] = update_data.last_name
+        
         update_stmt = (
             update(User)
             .where(User.user_id == current_user.user_id)
-            .values({
-                "username": update_data.username,
-                "first_name": update_data.first_name,
-                "last_name": update_data.last_name,
-                "updated_at": datetime.utcnow()
-            })
+            .values(update_values)
         )
         db.execute(update_stmt)
         db.commit()
@@ -422,29 +453,34 @@ async def change_password(
     Change user password.
     """
     try:
-        # Get current password hash
+        # Get current password
         password_hash = db.scalar(select(User.password_hash).where(User.user_id == current_user.user_id))
         if password_hash is None:
             raise HTTPException(status_code=401, detail="Invalid credentials")
             
-        # Verify current password
-        if not pwd_context.verify(password_data.current_password, str(password_hash)):
+        # Verify current password - direct string comparison
+        if str(password_hash) != password_data.current_password:
             raise HTTPException(status_code=401, detail="Current password is incorrect")
         
-        # Update password using update()
-        new_password_hash = pwd_context.hash(password_data.new_password)
+        # Update password using update() - store plain text
         update_stmt = (
             update(User)
             .where(User.user_id == current_user.user_id)
             .values(
-                password_hash=new_password_hash,
+                password_hash=password_data.new_password,  # Store plain text password
                 updated_at=datetime.utcnow()
             )
         )
         db.execute(update_stmt)
         db.commit()
-        
-        return {"message": "Password updated successfully"}
+        # Revoke all tokens for this user
+        db.execute(
+            update(Token)
+            .where(Token.user_id == current_user.user_id)
+            .values(revoked=True)
+        )
+        db.commit()
+        return {"message": "Password updated successfully. Please log in again."}
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -528,13 +564,12 @@ async def reset_password(
         if not reset_at or (datetime.utcnow() - reset_at) > timedelta(hours=24):
             raise HTTPException(status_code=400, detail="Reset key has expired")
         
-        # Update password using update()
-        new_password_hash = pwd_context.hash(new_password)
+        # Update password using update() - store plain text
         update_stmt = (
             update(User)
             .where(User.user_id == user.user_id)
             .values(
-                password_hash=new_password_hash,
+                password_hash=new_password,  # Store plain text password
                 reset_key=None,
                 reset_at=None,
                 updated_at=datetime.utcnow()
@@ -542,8 +577,14 @@ async def reset_password(
         )
         db.execute(update_stmt)
         db.commit()
-        
-        return {"message": "Password reset successful"}
+        # Revoke all tokens for this user
+        db.execute(
+            update(Token)
+            .where(Token.user_id == user.user_id)
+            .values(revoked=True)
+        )
+        db.commit()
+        return {"message": "Password reset successful. Please log in again."}
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -669,7 +710,11 @@ async def update_notification_preferences(
             db.add(new_prefs)
         
         db.commit()
-        return {"message": "Notification preferences updated successfully"}
+        return {
+            "email_enabled": bool(preferences.email_enabled),
+            "sms_enabled": bool(preferences.sms_enabled),
+            "push_enabled": bool(preferences.push_enabled)
+        }
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -766,7 +811,17 @@ async def create_support_ticket(
         db.commit()
         db.refresh(new_ticket)
         
-        return new_ticket
+        return SupportTicketResponse(
+            ticket_id=getattr(new_ticket, 'ticket_id', 0) or 0,
+            user_id=getattr(new_ticket, 'user_id', 0) or 0,
+            category=getattr(new_ticket, 'category', "") or "",
+            subject=getattr(new_ticket, 'subject', "") or "",
+            description=getattr(new_ticket, 'description', "") or "",
+            priority=getattr(new_ticket, 'priority', "") or "",
+            status=getattr(new_ticket, 'status', "") or "",
+            created_at=getattr(new_ticket, 'created_at', None) or datetime.utcnow(),
+            updated_at=getattr(new_ticket, 'updated_at', None) or datetime.utcnow()
+        )
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))

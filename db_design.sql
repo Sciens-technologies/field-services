@@ -1,11 +1,24 @@
+<<<<<<< HEAD
 
+=======
+>>>>>>> device_management
 -- users and profile module tables 
 
 -- ==============================
 -- USERS TABLE
 -- ==============================
+<<<<<<< HEAD
 CREATE TABLE users (
     user_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+=======
+CREATE TYPE user_status_enum AS ENUM ('ACTIVE', 'INACTIVE', 'BLOCKED', 'DEACTIVATED');
+CREATE TYPE work_order_status_enum AS ENUM ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'REJECTED');
+CREATE TYPE notification_type_enum AS ENUM ('EMAIL', 'SMS', 'PUSH', 'IN_APP');
+CREATE TYPE request_type_enum AS ENUM ('NEW_CONNECTION', 'SUBSCRIPTION', 'COMPLAINT', 'TERMINATION', 'OTHER');
+
+CREATE TABLE users (
+    user_id BIGSERIAL PRIMARY KEY,
+>>>>>>> device_management
     uuid VARCHAR(75) UNIQUE,
     username VARCHAR(100) NOT NULL UNIQUE,         -- same as login
     email VARCHAR(150) NOT NULL UNIQUE,
@@ -19,7 +32,11 @@ CREATE TABLE users (
     
     is_2fa_enabled BOOLEAN DEFAULT FALSE,
     activated BOOLEAN DEFAULT TRUE,
+<<<<<<< HEAD
     status ENUM('ACTIVE', 'INACTIVE', 'BLOCKED', 'DEACTIVATED') DEFAULT 'ACTIVE',
+=======
+    status user_status_enum DEFAULT 'ACTIVE',
+>>>>>>> device_management
 
     external_id VARCHAR(75),
     token TEXT,                                    -- for optional session handling
@@ -32,6 +49,7 @@ CREATE TABLE users (
     last_login TIMESTAMP,
     
     created_by VARCHAR(50) NOT NULL,
+<<<<<<< HEAD
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     reset_at TIMESTAMP,
     last_modified_by VARCHAR(50),
@@ -40,9 +58,469 @@ CREATE TABLE users (
       
     UNIQUE KEY ux_users_username (username),
     UNIQUE KEY ux_users_email (email)
+=======
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    reset_at TIMESTAMP,
+    last_modified_by VARCHAR(50),
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    CONSTRAINT ux_users_username UNIQUE (username),
+    CONSTRAINT ux_users_email UNIQUE (email)
+);
+
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+CREATE TRIGGER update_users_updated_at
+    BEFORE UPDATE ON users
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- ==============================
+-- ROLES TABLE
+-- ==============================
+CREATE TABLE roles (
+    role_id BIGSERIAL PRIMARY KEY,
+    role_name VARCHAR(100) NOT NULL UNIQUE,
+    description TEXT,
+    status VARCHAR(75) DEFAULT NULL,
+    active BOOLEAN DEFAULT TRUE,
+    created_by VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_modified_by VARCHAR(50),
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TRIGGER update_roles_updated_at
+    BEFORE UPDATE ON roles
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- ==============================
+-- user_roles TABLE
+-- ==============================
+CREATE TABLE user_roles (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    role_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    status VARCHAR(75) NULL DEFAULT NULL,
+    active TINYINT(1) NULL DEFAULT '1',
+
+    CONSTRAINT fk_role FOREIGN KEY (role_id) REFERENCES roles(role_id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+    CONSTRAINT fk_users FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+
+-- ==============================
+-- PERMISSIONS
+-- ==============================
+CREATE TABLE permissions (
+    permission_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    feature VARCHAR(100) NOT NULL,
+    description TEXT,
+    created_by VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_modified_by VARCHAR(50),
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    status VARCHAR(75) NULL DEFAULT NULL,
+    active TINYINT(1) NULL DEFAULT '1'
+);
+
+CREATE TABLE role_permissions (
+    role_id BIGINT,
+    permission_id BIGINT,
+    status VARCHAR(75) NULL DEFAULT NULL,
+    active TINYINT(1) NULL DEFAULT '1',
+    created_by VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_modified_by VARCHAR(50),
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, 
+    
+    PRIMARY KEY (role_id, permission_id),
+    FOREIGN KEY (role_id) REFERENCES roles(role_id),
+    FOREIGN KEY (permission_id) REFERENCES permissions(permission_id)
+);
+
+CREATE TABLE user_status_audit (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    changed_by VARCHAR(50) NOT NULL,  -- admin or system user who made the change
+    old_status ENUM('ACTIVE', 'INACTIVE', 'BLOCKED', 'DEACTIVATED') NOT NULL,
+    new_status ENUM('ACTIVE', 'INACTIVE', 'BLOCKED', 'DEACTIVATED') NOT NULL,
+    reason TEXT NOT NULL,
+    remarks TEXT,                     -- optional additional comment
+    changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+-- ==============================
+-- LOGS & NOTIFICATIONS
+-- ==============================
+CREATE TABLE notification_templates (
+  template_id BIGSERIAL PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  template_key VARCHAR(50) NOT NULL,
+  subject VARCHAR(255) NOT NULL,
+  content TEXT NOT NULL,
+  notification_type notification_type_enum NOT NULL,
+  active BOOLEAN DEFAULT TRUE,
+  status VARCHAR(75),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY template_key (template_key)
+);
+
+-- artifact_notification_events
+CREATE TABLE `artifact_notification_events` (
+  `event_id` BIGINT NOT NULL AUTO_INCREMENT,
+  `template_id` BIGINT NOT NULL,
+  `initiated_by` BIGINT NULL, -- user/admin/system who triggered it
+  `notification_scope` ENUM('INDIVIDUAL', 'GROUP', 'SERVICETYPE') NOT NULL DEFAULT 'INDIVIDUAL',
+  `target_type` ENUM('USER', 'ROLE', 'SEGMENT') NULL, -- Optional
+  `target_value` VARCHAR(255) NULL, -- JSON or comma-separated target IDs if GROUP
+  `custom_metadata` JSON DEFAULT NULL,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`event_id`),
+  FOREIGN KEY (`template_id`) REFERENCES `notification_templates` (`template_id`),
+  FOREIGN KEY (`initiated_by`) REFERENCES `users` (`user_id`)
+);
+
+-- user_notifications
+CREATE TABLE `user_notifications` (
+  `notification_id` BIGINT NOT NULL AUTO_INCREMENT,
+  -- Either direct user_id or group-based delivery
+  `user_id` BIGINT NULL, -- for direct notification
+  `target_type` ENUM('ROLE', 'SEGMENT', 'GROUP') NULL, -- for group-based
+  `target_value` VARCHAR(255) NULL, -- e.g., 'FIELD_AGENT', 'ZONE_1', etc.
+
+  `template_id` BIGINT DEFAULT NULL,
+  `title` VARCHAR(255) NOT NULL,
+  `message` TEXT NOT NULL,
+  `status` ENUM('PENDING','SENT','FAILED','READ') DEFAULT 'PENDING',
+  `metadata` JSON DEFAULT NULL,
+  `created_at` TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+  `sent_at` DATETIME DEFAULT NULL,
+  `read_at` DATETIME DEFAULT NULL,
+
+  PRIMARY KEY (`notification_id`),
+  KEY `user_id` (`user_id`),
+  KEY `template_id` (`template_id`),
+
+  CONSTRAINT `user_notifications_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`user_id`),
+  CONSTRAINT `user_notifications_ibfk_2` FOREIGN KEY (`template_id`) REFERENCES `notification_templates` (`template_id`),
+
+  -- XOR logic: either user_id OR (target_type + target_value)
+  CHECK (
+    (user_id IS NOT NULL AND target_type IS NULL AND target_value IS NULL) OR
+    (user_id IS NULL AND target_type IS NOT NULL AND target_value IS NOT NULL)
+  )
 );
 
 
+
+-- ==============================
+-- AUTHENTICATION SUPPORT
+-- ==============================
+CREATE TABLE user_auth_providers (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    provider ENUM('LOCAL', 'AZURE', 'GOOGLE', 'FACEBOOK') NOT NULL,
+    provider_user_id VARCHAR(150) NOT NULL, -- e.g., Azure OID, Google sub, etc.
+    provider_username VARCHAR(150),         -- e.g., Azure UPN or email
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_user_provider (user_id, provider),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE TABLE user_auth_metadata (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    provider VARCHAR(50), -- 'AZURE'
+    external_user_id VARCHAR(100), -- Azure OID
+    access_token TEXT,
+    refresh_token TEXT,
+    token_expires_at TIMESTAMP,
+    
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
+
+-- DEVICE MANAGEMENT module tables 
+
+-- ==============================
+-- DEVICE MANAGEMENT
+-- ==============================
+-- device
+CREATE TABLE devices (
+    device_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    serial_number VARCHAR(100) UNIQUE,
+    model VARCHAR(100),
+    status ENUM('REGISTERED', 'ACTIVE', 'BLOCKED', 'DEACTIVATED', 'READY_TO_ACTIVATE') DEFAULT 'REGISTERED',
+    last_communication TIMESTAMP,
+    location VARCHAR(100),
+    work_center_id BIGINT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    active TINYINT(1) NULL DEFAULT '1',
+
+    FOREIGN KEY (work_center_id) REFERENCES work_centres(work_centre_id)
+);
+
+
+-- device_artifacts
+CREATE TABLE device_artifacts (
+    artifact_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    device_id BIGINT NOT NULL,
+    source_type ENUM(
+        'PURCHASED',
+        'LEASED',
+        'TRANSFERRED',
+        'DONATED',
+        'MANUFACTURED',
+        'OTHER'
+    ) NOT NULL,
+    source_reference VARCHAR(255) NULL,      -- e.g. Invoice number, vendor ID, transfer note
+    source_details JSON NULL,                -- optional metadata like vendor info, shipment data
+    source_destination ENUM(
+        'REGIONAL_PLANET',
+        'CENTER_PLANET',
+        'OPERATIONAL_PLANET',
+        'WORK_CENTER',
+        'OTHER'
+    ) NULL,                                  -- new column for destination category
+    acquisition_date DATE DEFAULT CURRENT_DATE,
+    added_by BIGINT NULL,                    -- user/admin who added the record
+    remarks TEXT NULL,
+    status VARCHAR(75) NULL DEFAULT NULL,
+    active TINYINT(1) NULL DEFAULT '1',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (device_id) REFERENCES devices(device_id),
+    FOREIGN KEY (added_by) REFERENCES users(user_id)
+);
+
+
+
+-- device_assignments
+CREATE TABLE device_assignments (
+    assignment_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    device_id BIGINT NOT NULL,
+
+    user_id BIGINT NULL, -- for direct user assignment
+    role ENUM(
+        'TECHNICIAN',
+        'SUPERVISOR',
+        'MANAGER',
+        'ADMIN',
+        'WAREHOUSE',
+        'OTHER'
+    ) NULL, -- for role-based assignment
+
+    assigned_by_user_id BIGINT NULL, -- admin user who assigned
+    assigned_by_role ENUM(
+        'TECHNICIAN',
+        'SUPERVISOR',
+        'MANAGER',
+        'ADMIN',
+        'WAREHOUSE',
+        'OTHER'
+    ) NULL, -- admin role who assigned
+
+    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    unassigned_at TIMESTAMP NULL,
+    status VARCHAR(50),
+    active TINYINT(1) DEFAULT 1,
+
+    FOREIGN KEY (device_id) REFERENCES devices(device_id),
+    FOREIGN KEY (user_id) REFERENCES users(user_id),
+    FOREIGN KEY (assigned_by_user_id) REFERENCES users(user_id),
+
+    -- Enforce only one assignment type: user or role
+    CHECK (
+        (user_id IS NOT NULL AND role IS NULL) OR
+        (user_id IS NULL AND role IS NOT NULL)
+    ),
+
+    -- Enforce only one assigner: assigned_by_user_id or assigned_by_role
+    CHECK (
+        (assigned_by_user_id IS NOT NULL AND assigned_by_role IS NULL) OR
+        (assigned_by_user_id IS NULL AND assigned_by_role IS NOT NULL)
+    )
+);
+
+-- device_registration_confirmations
+CREATE TABLE device_registration_confirmations (
+    confirmation_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    device_id BIGINT,
+    functional_admin_id BIGINT,
+    confirmed_at TIMESTAMP,
+    status VARCHAR(75) NULL DEFAULT NULL,
+    active TINYINT(1) NULL DEFAULT '1',
+    
+    FOREIGN KEY (device_id) REFERENCES devices(device_id),
+    FOREIGN KEY (functional_admin_id) REFERENCES users(user_id)
+
+);
+
+-- device_status_audit
+CREATE TABLE device_status_audit (
+    audit_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    device_id BIGINT,
+    status_before VARCHAR(50),
+    status_after VARCHAR(50),
+    reason TEXT,
+    changed_by_user_id BIGINT,
+    changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(75) NULL DEFAULT NULL,
+    active TINYINT(1) NULL DEFAULT '1',
+    
+    FOREIGN KEY (device_id) REFERENCES devices(device_id),
+    FOREIGN KEY (changed_by_user_id) REFERENCES users(user_id)
+);
+
+-- device_health_logs
+CREATE TABLE device_health_logs (
+    health_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    device_id BIGINT,
+    battery_status VARCHAR(20),
+    network_status VARCHAR(20),
+    touch_screen VARCHAR(20),
+    camera_status VARCHAR(20),
+    gps_status VARCHAR(20),
+    -- logtext Json need add 
+    logged_by BIGINT,
+    logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(50),
+    active TINYINT(1) DEFAULT 1,
+    FOREIGN KEY (device_id) REFERENCES devices(device_id),
+    FOREIGN KEY (logged_by) REFERENCES users(user_id)
+);
+
+
+
+
+CREATE TABLE resource_request_modules (
+    module_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    module_key VARCHAR(50) NOT NULL UNIQUE, -- e.g., 'DEVICE', 'WORK_ORDER'
+    description TEXT,
+    status VARCHAR(75) NULL DEFAULT NULL,
+    active TINYINT(1) NULL DEFAULT '1',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE resource_types (
+    resource_type_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    type_key VARCHAR(50) NOT NULL UNIQUE, -- e.g., 'MATERIAL', 'TOOL'
+    description TEXT,
+    status VARCHAR(75) NULL DEFAULT NULL,
+    active TINYINT(1) NULL DEFAULT '1',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE resource_requests (
+    request_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+
+    module_id BIGINT NOT NULL, -- FK from resource_request_modules
+    module_reference_id BIGINT NOT NULL, -- ID from external module (e.g., device_id, work_order_id)
+
+    requested_by BIGINT NOT NULL,
+    resource_type_id BIGINT NOT NULL, -- FK from resource_types
+    resource_description TEXT,
+
+    quantity INT DEFAULT 1,
+    priority ENUM('LOW', 'MEDIUM', 'HIGH', 'URGENT') DEFAULT 'MEDIUM',
+    status ENUM('PENDING', 'APPROVED', 'REJECTED', 'FULFILLED') DEFAULT 'PENDING',
+
+    requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    active TINYINT(1) DEFAULT 1,
+
+    FOREIGN KEY (module_id) REFERENCES resource_request_modules(module_id),
+    FOREIGN KEY (resource_type_id) REFERENCES resource_types(resource_type_id),
+    FOREIGN KEY (requested_by) REFERENCES users(user_id)
+);
+
+-- work order module tables 
+-- already this tables hirarchy have in eneo side for your understing purpose we creating this tables 
+-- 1. work_centres I need to improve 
+CREATE TABLE work_centres (
+    work_centre_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    name VARCHAR(255) NOT NULL,
+    registration_number VARCHAR(100) UNIQUE,
+    tax_id VARCHAR(100) NULL,
+    
+    contact_email VARCHAR(150) NULL,
+    contact_phone VARCHAR(50) NULL,
+    website_url VARCHAR(255) NULL,
+    
+    address_line1 VARCHAR(255) NULL,
+    address_line2 VARCHAR(255) NULL,
+    city VARCHAR(100) NULL,
+    state VARCHAR(100) NULL,
+    postal_code VARCHAR(20) NULL,
+    country VARCHAR(100) NULL,
+
+    status VARCHAR(75) DEFAULT 'ACTIVE',   -- or use ENUM if statuses are fixed
+    active TINYINT(1) DEFAULT 1,
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    created_by BIGINT NULL,
+    updated_by BIGINT NULL,
+    
+    FOREIGN KEY (created_by) REFERENCES users(user_id),
+    FOREIGN KEY (updated_by) REFERENCES users(user_id)
+);
+
+-- 2. work_orders
+CREATE TABLE work_orders (
+    work_order_id BIGSERIAL PRIMARY KEY,
+    wo_number VARCHAR(100) UNIQUE NOT NULL,
+    title VARCHAR(255),
+    description TEXT,
+    work_order_type VARCHAR(100),
+    customer_id VARCHAR(100),
+    customer_name VARCHAR(255),
+    location VARCHAR(255),
+    latitude DECIMAL(10,8),
+    longitude DECIMAL(11,8),
+    scheduled_date TIMESTAMP,
+    due_date TIMESTAMP,
+    priority VARCHAR(10) DEFAULT 'MEDIUM',
+    status work_order_status_enum DEFAULT 'PENDING',
+    created_by BIGINT REFERENCES users(user_id),
+    work_centre_id BIGINT REFERENCES work_centres(work_centre_id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    active BOOLEAN DEFAULT TRUE
+>>>>>>> device_management
+);
+
+-- 3. work_order_assignments
+CREATE TABLE work_order_assignments (
+    assignment_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    work_order_id BIGINT NOT NULL,
+    agent_id BIGINT NOT NULL,
+    assigned_by BIGINT NOT NULL,
+    reassigned BOOLEAN DEFAULT FALSE,
+    reassignment_reason TEXT,
+    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(75) NULL DEFAULT NULL,
+    active TINYINT(1) NULL DEFAULT '1',
+
+<<<<<<< HEAD
 -- ==============================
 -- ROLES TABLE
 -- ==============================
@@ -481,6 +959,8 @@ CREATE TABLE work_order_assignments (
     status VARCHAR(75) NULL DEFAULT NULL,
     active TINYINT(1) NULL DEFAULT '1',
 
+=======
+>>>>>>> device_management
     FOREIGN KEY (work_order_id) REFERENCES work_orders(work_order_id),
     FOREIGN KEY (agent_id) REFERENCES users(user_id),
     FOREIGN KEY (assigned_by) REFERENCES users(user_id)
@@ -619,6 +1099,7 @@ CREATE TABLE work_order_reassign (
 
 -- 1. work_order_data_capture
 CREATE TABLE work_order_data_capture (
+<<<<<<< HEAD
     capture_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     work_order_id BIGINT NOT NULL,
     request_type ENUM('NEW_CONNECTION', 'SUBSCRIPTION', 'COMPLAINT', 'TERMINATION', 'OTHER') NOT NULL,
@@ -631,6 +1112,17 @@ CREATE TABLE work_order_data_capture (
 
     FOREIGN KEY (work_order_id) REFERENCES work_orders(work_order_id),
     FOREIGN KEY (agent_id) REFERENCES users(user_id)
+=======
+    capture_id BIGSERIAL PRIMARY KEY,
+    work_order_id BIGINT REFERENCES work_orders(work_order_id) NOT NULL,
+    request_type request_type_enum NOT NULL,
+    agent_id BIGINT REFERENCES users(user_id) NOT NULL,
+    captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    offline_captured BOOLEAN DEFAULT FALSE,
+    synced BOOLEAN DEFAULT TRUE,
+    status VARCHAR(75),
+    active BOOLEAN DEFAULT TRUE
+>>>>>>> device_management
 );
 
 -- 2. new_connection_capture
@@ -852,6 +1344,7 @@ CREATE TABLE work_centre_subcontractors (
     FOREIGN KEY (subcontractor_id) REFERENCES subcontractor_companies(subcontractor_id),
     FOREIGN KEY (assigned_by) REFERENCES users(user_id)
 );
+<<<<<<< HEAD
 -- First create the ENUM types
 CREATE TYPE feedback_category AS ENUM ('BUG', 'FEATURE', 'IMPROVEMENT', 'OTHER');
 CREATE TYPE feedback_priority AS ENUM ('LOW', 'MEDIUM', 'HIGH', 'URGENT');
@@ -969,3 +1462,48 @@ CREATE TABLE user_notification_preferences (
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
     UNIQUE KEY uq_user_notification_pref (user_id, notification_type, channel)
 );
+=======
+
+-- ==============================
+-- MISSING TABLES
+-- ==============================
+
+-- user_notification_preferences
+CREATE TABLE user_notification_preferences (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT REFERENCES users(user_id) UNIQUE,
+    email_enabled BOOLEAN DEFAULT TRUE,
+    sms_enabled BOOLEAN DEFAULT FALSE,
+    push_enabled BOOLEAN DEFAULT TRUE,
+    in_app_enabled BOOLEAN DEFAULT TRUE,
+    quiet_hours_start VARCHAR(5),  -- Format: "HH:MM"
+    quiet_hours_end VARCHAR(5),    -- Format: "HH:MM"
+    timezone VARCHAR(50),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- notification_history
+CREATE TABLE notification_history (
+    history_id BIGSERIAL PRIMARY KEY,
+    notification_id BIGINT REFERENCES user_notifications(notification_id),
+    status VARCHAR(20) NOT NULL,  -- SENT, FAILED, READ
+    error_message TEXT,
+    delivery_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    delivery_metadata JSONB
+);
+
+-- auth_tokens
+CREATE TABLE auth_tokens (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+    access_token TEXT NOT NULL UNIQUE,
+    refresh_token TEXT NOT NULL UNIQUE,
+    expires_at TIMESTAMP,
+    revoked BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TIMESTAMP,
+    ip_address VARCHAR(100),
+    device_info TEXT
+);
+>>>>>>> device_management

@@ -252,6 +252,25 @@ async def reassign_work_order(
         if work_order_status not in [WorkOrderStatus.PENDING, "NEW", WorkOrderStatus.REJECTED, "REJECTED"]:
             raise HTTPException(status_code=400, detail="Work order must be in PENDING, NEW, or REJECTED status to reassign")
         
+        # Check if current assignment is already ACCEPTED - prevent reassignment of accepted work orders
+        current_assignment_status = db.scalar(
+            select(WorkOrderAssignment.status).where(
+                WorkOrderAssignment.assignment_id == current_assignment.assignment_id
+            )
+        )
+        if current_assignment_status == "ACCEPTED":
+            raise HTTPException(
+                status_code=400, 
+                detail="Cannot reassign work order that has been acknowledged as ACCEPTED. Only REJECTED work orders can be reassigned."
+            )
+        
+        # Only allow reassignment of PENDING or REJECTED assignments
+        if current_assignment_status not in ["PENDING", "REJECTED"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot reassign work order with assignment status '{current_assignment_status}'. Only PENDING or REJECTED assignments can be reassigned."
+            )
+        
         # Validate new agent
         stmt = select(User).where(
             and_(

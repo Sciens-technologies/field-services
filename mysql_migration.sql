@@ -871,3 +871,86 @@ CREATE TABLE work_centre_subcontractors (
 
 -- Re-enable foreign key checks
 SET FOREIGN_KEY_CHECKS = 1; 
+
+
+ALTER TABLE device_assignments MODIFY COLUMN role ENUM('TECHNICIAN', 'SUPERVISOR', 'MANAGER', 'ADMIN', 'WAREHOUSE', 'AGENT') NULL;
+ALTER TYPE devicestatus ADD VALUE 'BLOCKED';
+ALTER TYPE devicestatus ADD VALUE 'ACTIVE';
+ALTER TYPE devicestatus ADD VALUE 'BLOCKED';
+ALTER TYPE devicestatus ADD VALUE 'DEACTIVATED';
+-- AUTH TOKENS
+-- ==============================
+CREATE TABLE auth_tokens (
+    token_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT NOT NULL,
+    token_type VARCHAR(50) DEFAULT 'bearer',
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    revoked_at TIMESTAMP NULL,
+    device_info JSON,
+    ip_address VARCHAR(45),
+    status VARCHAR(50) DEFAULT 'ACTIVE',
+    active TINYINT(1) DEFAULT 1,
+
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+-- ==============================
+-- NOTIFICATION HISTORY
+-- ==============================
+CREATE TABLE notification_history (
+    history_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    notification_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    channel ENUM('EMAIL', 'SMS', 'PUSH', 'IN_APP') NOT NULL,
+    status ENUM('PENDING', 'SENT', 'FAILED', 'DELIVERED', 'READ') DEFAULT 'PENDING',
+    error_message TEXT,
+    delivery_timestamp TIMESTAMP NULL,
+    delivery_metadata JSON,
+    retry_count INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    active TINYINT(1) DEFAULT 1,
+
+    FOREIGN KEY (notification_id) REFERENCES user_notifications(notification_id),
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
+-- ==============================
+-- USER ACTIVITY LOGS
+-- ==============================
+CREATE TABLE user_activity_logs (
+    log_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    activity_type VARCHAR(100) NOT NULL,
+    activity_details JSON,
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    device_info JSON,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(50) DEFAULT 'SUCCESS',
+    active TINYINT(1) DEFAULT 1,
+
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
+-- ==============================
+-- USER NOTIFICATION PREFERENCES
+-- ==============================
+CREATE TABLE user_notification_preferences (
+    preference_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    notification_type VARCHAR(100) NOT NULL,
+    channel ENUM('EMAIL', 'SMS', 'PUSH', 'IN_APP') NOT NULL,
+    is_enabled BOOLEAN DEFAULT TRUE,
+    frequency VARCHAR(50) DEFAULT 'IMMEDIATE',
+    quiet_hours_start TIME NULL,
+    quiet_hours_end TIME NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    active TINYINT(1) DEFAULT 1,
+
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    UNIQUE KEY uq_user_notification_pref (user_id, notification_type, channel)
+);

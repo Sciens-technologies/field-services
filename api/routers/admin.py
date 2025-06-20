@@ -2,6 +2,16 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, text, update, select
+import secrets
+import string
+from datetime import date as dt
+from db.models import WorkCentre
+from db.models import User, Role, UserActivityLog, NotificationHistory
+from db.database import get_db
+from api.services.users import get_current_user, get_user_by_email
+from api.schemas import UserResponse, UserCreate, ExistingUserResponse
+from passlib.hash import bcrypt
+from api.utils.email import send_email, send_temporary_password_email
 from typing import List, Optional
 from db.models import User, Role, UserRole, Permission, RolePermission, UserStatusAudit, NotificationHistory, UserStatus
 from db.database import get_db
@@ -12,7 +22,6 @@ from api.schemas import (
 from uuid import uuid4
 from passlib.context import CryptContext
 from api.utils.util import generate_secure_password
-from api.utils.email import send_temporary_password_email
 
 admin_router = APIRouter()
 
@@ -129,7 +138,7 @@ async def admin_get_users(
     users = query.all()
     return [user_to_response(user, db) for user in users]
 
-@admin_router.post("/users", response_model=UserResponse)
+@admin_router.post("/users", response_model=None)
 async def admin_create_user(
     user_data: UserCreate,
     current_user: User = Depends(get_current_user),
@@ -137,14 +146,46 @@ async def admin_create_user(
 ):
     """Create a new user (admin only). The password is generated and sent to the user by email. 'created_by' is set automatically."""
     try:
+        # Check if username already exists
+        existing_username = db.query(User).filter(User.username == user_data.username).first()
+        if existing_username:
+            return {
+                "message": f"Username '{user_data.username}' already exists",
+                "existing_user": {
+                    "user_id": existing_username.user_id,
+                    "username": existing_username.username,
+                    "email": existing_username.email,
+                    "first_name": existing_username.first_name,
+                    "last_name": existing_username.last_name,
+                    "status": existing_username.status
+                }
+            }
+        
+        # Check if email already exists
+        existing_email = db.query(User).filter(User.email == user_data.email).first()
+        if existing_email:
+            return {
+                "message": f"Email '{user_data.email}' already exists",
+                "existing_user": {
+                    "user_id": existing_email.user_id,
+                    "username": existing_email.username,
+                    "email": existing_email.email,
+                    "first_name": existing_email.first_name,
+                    "last_name": existing_email.last_name,
+                    "status": existing_email.status
+                }
+            }
+        
         # Generate a secure password
         temp_password = generate_secure_password()
+        print(f"Generated password: '{temp_password}' (length: {len(temp_password)})")
+        
         # Create user
         new_user = User(
             uuid=str(uuid4()),
             username=user_data.username,
             email=user_data.email,
-            password_hash=pwd_context.hash(temp_password),
+            password_hash=temp_password,  # Store plain text password in password_hash column
             first_name=user_data.first_name,
             last_name=user_data.last_name,
             status=UserStatus.ACTIVE,
@@ -152,6 +193,7 @@ async def admin_create_user(
             created_by=str(current_user.username),
             created_at=datetime.utcnow()
         )
+        print(f"Storing password in DB: '{new_user.password_hash}' (length: {len(str(new_user.password_hash))})")
         db.add(new_user)
         db.flush()  # Get the user_id
         # Get role ID from role name
@@ -175,7 +217,11 @@ async def admin_create_user(
         except Exception as email_exc:
             db.rollback()
             raise HTTPException(status_code=500, detail=f"User created but failed to send email: {str(email_exc)}")
-        return user_to_response(new_user, db)
+        
+        # Create response with password included
+        response_data = user_to_response(new_user, db)
+        response_data['password_hash'] = temp_password  # Include plain text password in response
+        return UserResponse(**response_data)
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -229,21 +275,23 @@ async def create_role(
     db.commit()
     db.refresh(new_role)
     perms = db.query(Permission).join(RolePermission).filter(RolePermission.role_id == new_role.role_id).all()
-    return {
-        "id": new_role.role_id,
-        "name": new_role.role_name,
-        "description": new_role.description,
-        "permissions": [
-            {
-                "id": p.permission_id,
-                "feature_name": p.feature,
-                "description": p.description,
-                "created_at": p.created_at
-            } for p in perms
+    return RoleResponse(
+        id=safe_value(sa_instance_value(new_role, 'role_id'), 0),
+        name=safe_value(sa_instance_value(new_role, 'role_name'), ""),
+        description=sa_instance_value(new_role, 'description'),
+        permissions=[
+            PermissionResponse(
+                permission_id=safe_value(sa_instance_value(p, 'permission_id'), 0),
+                feature_name=safe_value(sa_instance_value(p, 'feature'), ""),
+                description=sa_instance_value(p, 'description'),
+                active=safe_value(sa_instance_value(p, 'active'), False),
+                created_at=safe_value(sa_instance_value(p, 'created_at'), datetime.utcnow()),
+                updated_at=safe_value(sa_instance_value(p, 'updated_at'), datetime.utcnow())
+            ) for p in perms
         ]
-    }
+    )
 
-@admin_router.get("/roles")
+@admin_router.get("/roles", response_model=List[RoleResponse])
 @role_required(["admin", "super_admin"])
 async def get_roles(
     name: Optional[str] = None,
@@ -255,25 +303,26 @@ async def get_roles(
     query = db.query(Role)
     if name:
         query = query.filter(Role.role_name.ilike(f"%{name}%"))
-    total = query.count()
     roles = query.offset((page - 1) * limit).limit(limit).all()
     result = []
     for role in roles:
         perms = db.query(Permission).join(RolePermission).filter(RolePermission.role_id == role.role_id).all()
-        result.append({
-            "id": role.role_id,
-            "name": role.role_name,
-            "description": role.description,
-            "permissions": [
-                {
-                    "id": p.permission_id,
-                    "feature_name": p.feature,
-                    "description": p.description,
-                    "created_at": p.created_at
-                } for p in perms
+        result.append(RoleResponse(
+            id=safe_value(sa_instance_value(role, 'role_id'), 0),
+            name=safe_value(sa_instance_value(role, 'role_name'), ""),
+            description=sa_instance_value(role, 'description'),
+            permissions=[
+                PermissionResponse(
+                    permission_id=safe_value(sa_instance_value(p, 'permission_id'), 0),
+                    feature_name=safe_value(sa_instance_value(p, 'feature'), ""),
+                    description=sa_instance_value(p, 'description'),
+                    active=safe_value(sa_instance_value(p, 'active'), False),
+                    created_at=safe_value(sa_instance_value(p, 'created_at'), datetime.utcnow()),
+                    updated_at=safe_value(sa_instance_value(p, 'updated_at'), datetime.utcnow()),
+                ) for p in perms
             ]
-        })
-    return {"roles": result, "total": total, "page": page, "limit": limit}
+        ))
+    return result
 
 # --- Permission Management ---
 @admin_router.post("/permissions", response_model=PermissionResponse, status_code=201)
@@ -298,15 +347,15 @@ async def create_permission(
     if isinstance(updated_at_val, type(None)):
         updated_at_val = None
     return PermissionResponse(
-        permission_id=getattr(new_permission, 'permission_id'),
-        feature_name=str(getattr(new_permission, 'feature')),
-        description=str(getattr(new_permission, 'description')) if getattr(new_permission, 'description') is not None else None,
-        active=bool(getattr(new_permission, 'active')),
-        created_at=getattr(new_permission, 'created_at'),
-        updated_at=updated_at_val
+        permission_id=safe_value(sa_instance_value(new_permission, 'permission_id'), 0),
+        feature_name=safe_value(sa_instance_value(new_permission, 'feature'), ""),
+        description=sa_instance_value(new_permission, 'description'),
+        active=safe_value(sa_instance_value(new_permission, 'active'), False),
+        created_at=safe_value(sa_instance_value(new_permission, 'created_at'), datetime.utcnow()),
+        updated_at=safe_value(sa_instance_value(new_permission, 'updated_at'), datetime.utcnow())
     )
 
-@admin_router.get("/permissions")
+@admin_router.get("/permissions", response_model=List[PermissionResponse])
 @role_required(["admin", "super_admin"])
 async def get_permissions(
     feature: Optional[str] = None,
@@ -318,17 +367,19 @@ async def get_permissions(
     query = db.query(Permission)
     if feature:
         query = query.filter(Permission.feature.ilike(f"%{feature}%"))
-    total = query.count()
     perms = query.offset((page - 1) * limit).limit(limit).all()
-    result = [{
-        "id": p.permission_id,
-        "feature_name": p.feature,
-        "description": p.description,
-        "created_at": p.created_at
-    } for p in perms]
-    return {"permissions": result, "total": total, "page": page, "limit": limit}
+    return [
+        PermissionResponse(
+            permission_id=safe_value(sa_instance_value(p, 'permission_id'), 0),
+            feature_name=safe_value(sa_instance_value(p, 'feature'), ""),
+            description=sa_instance_value(p, 'description'),
+            active=safe_value(sa_instance_value(p, 'active'), False),
+            created_at=safe_value(sa_instance_value(p, 'created_at'), datetime.utcnow()),
+            updated_at=safe_value(sa_instance_value(p, 'updated_at'), datetime.utcnow()),
+        ) for p in perms
+    ]
 
-@admin_router.patch("/roles/{role_id}/permissions")
+@admin_router.patch("/roles/{role_id}/permissions", response_model=List[PermissionResponse])
 @role_required(["admin", "super_admin"])
 async def update_role_permissions(
     role_id: int,
@@ -358,10 +409,22 @@ async def update_role_permissions(
     db.commit()
     updated_perms = db.query(Permission).join(RolePermission).filter(RolePermission.role_id == role_id).all()
     return [
-        {
-            "id": p.permission_id,
-            "feature_name": p.feature,
-            "description": p.description,
-            "created_at": p.created_at
-        } for p in updated_perms
+        PermissionResponse(
+            permission_id=safe_value(sa_instance_value(p, 'permission_id'), 0),
+            feature_name=safe_value(sa_instance_value(p, 'feature'), ""),
+            description=sa_instance_value(p, 'description'),
+            active=safe_value(sa_instance_value(p, 'active'), False),
+            created_at=safe_value(sa_instance_value(p, 'created_at'), datetime.utcnow()),
+            updated_at=safe_value(sa_instance_value(p, 'updated_at'), datetime.utcnow())
+        ) for p in updated_perms
     ]
+
+def sa_instance_value(obj, attr):
+    val = getattr(obj, attr)
+    # If it's a SQLAlchemy Column, get the value from the instance's __dict__
+    if hasattr(val, 'key') and hasattr(obj, '__dict__'):
+        return obj.__dict__.get(attr)
+    return val
+
+def safe_value(val, default):
+    return val if val is not None else default
