@@ -380,59 +380,15 @@ async def deactivate_device(
         reason=reason,
         changed_by_user_id=current_user.user_id,
     )
+    db.add(audit)
+
     device.status = DeviceStatus.DEACTIVATED.value
     device.active = False
     device.updated_at = datetime.utcnow()
 
-    open_wos = (
-        db.query(WorkOrder)
-        .filter(
-            WorkOrder.device_id == device_id,
-            WorkOrder.status.in_([
-                WorkOrderStatus.PENDING.value,
-                WorkOrderStatus.IN_PROGRESS.value
-            ])
-        )
-        .all()
-    )
-
-    pending_work_orders = [
-        {
-            "work_order_id": wo.work_order_id,
-            "wo_number": wo.wo_number,
-            "status": wo.status
-        }
-        for wo in open_wos
-    ]
-    db.query(DeviceAssignment).filter(
-        DeviceAssignment.device_id == device_id,
-        DeviceAssignment.active == True
-    ).update(
-        {
-            DeviceAssignment.active: False,
-            DeviceAssignment.unassigned_at: datetime.utcnow(),
-            DeviceAssignment.status: "UNASSIGNED"
-        },
-        synchronize_session="fetch"
-    )
-    available_devices = db.query(Device).filter(
-        Device.device_id != device_id,
-        Device.active.is_(True),
-        Device.status == DeviceStatus.ACTIVE.value
-    ).all()
-
-    available_devices_response = [
-    {
-        "device_id": d.device_id,
-        "serial_number": d.serial_number
-    }
-    for d in available_devices
-]
     db.commit()
     return {
-        "message": f"Device {device_id} deactivated successfully.",
-        "pending_work_orders": pending_work_orders,
-        "available_devices": available_devices_response
+        "message": f"Device {device_id} deactivated successfully."
     }
 
 
@@ -473,22 +429,6 @@ async def activate_device(
     db.commit()
 
     return {"message": f"Device {device_id} activated successfully"}
-
-@device_router.post("/{device_id}/admin-approve", status_code=200)
-@admin_required
-async def approve_device_by_admin(device_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    device = db.query(Device).filter(Device.device_id == device_id).first()
-    if not device:
-        raise HTTPException(404, "Device not found")
-
-    if device.status != DeviceStatus.REGISTERED.value:
-        raise HTTPException(400, detail="Only REGISTERED devices can be approved")
-
-    device.status = DeviceStatus.READY_TO_ACTIVATE.value
-    device.admin_approved_at = datetime.utcnow()
-    db.commit()
-    return {"message": f"Device {device_id} approved by admin and ready to activate."}
-
 
 
 def _device_to_response(db: Session, device: Device, work_order_count: int = 0) -> DeviceResponse:
