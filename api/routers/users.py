@@ -356,11 +356,11 @@ async def signup(user_data: SignupRequest, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(new_user)
 
-        # Ensure 'superadmin' role exists
-        superadmin_role = db.query(Role).filter_by(role_name="superadmin").first()
+        # Ensure 'super_admin' role exists
+        superadmin_role = db.query(Role).filter_by(role_name="super_admin").first()
         if not superadmin_role:
             superadmin_role = Role(
-                role_name="superadmin",
+                role_name="super_admin",
                 description="Super Administrator",
                 status="ACTIVE",
                 active=True,
@@ -372,7 +372,7 @@ async def signup(user_data: SignupRequest, db: Session = Depends(get_db)):
             db.commit()
             db.refresh(superadmin_role)
 
-        # Assign 'superadmin' role to the new user
+        # Assign 'super_admin' role to the new user
         user_role = UserRole(
             user_id=new_user.user_id,
             role_id=superadmin_role.role_id,

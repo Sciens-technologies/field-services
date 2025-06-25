@@ -9,7 +9,7 @@ from db.models import WorkCentre
 from db.models import User, Role, UserActivityLog, NotificationHistory
 from db.database import get_db
 from api.services.users import get_current_user, get_user_by_email
-from api.schemas import UserResponse, UserCreate, ExistingUserResponse
+from api.schemas import UserResponse, UserCreate, ExistingUserResponse, UserResponseWithoutPassword
 from passlib.hash import bcrypt
 from api.utils.email import send_email, send_temporary_password_email
 from typing import List, Optional
@@ -141,7 +141,7 @@ async def reactivate_user(
     }
 
 
-@admin_router.get("/users", response_model=List[UserResponse])
+@admin_router.get("/users", response_model=List[UserResponseWithoutPassword])
 @role_required(["admin", "super_admin"])
 async def admin_get_users(
     name: Optional[str] = Query(None),
@@ -165,7 +165,38 @@ async def admin_get_users(
     if status:
         query = query.filter(User.status == status)
     users = query.all()
-    return [user_to_response(user, db) for user in users]
+    
+    # Convert users to response without password
+    user_responses = []
+    for user in users:
+        # Get user roles
+        user_roles = db.query(UserRole).filter(
+            UserRole.user_id == user.user_id,
+            UserRole.active == True
+        ).all()
+        
+        role_names = []
+        for user_role in user_roles:
+            role = db.query(Role).filter(Role.role_id == user_role.role_id).first()
+            if role:
+                role_names.append(role.role_name)
+        
+        # Create response without password
+        user_response = {
+            "user_id": user.user_id,
+            "uuid": user.uuid,
+            "username": user.username,
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "status": user.status,
+            "created_at": user.created_at,
+            "updated_at": user.updated_at,
+            "roles": role_names
+        }
+        user_responses.append(user_response)
+    
+    return user_responses
 
 
 @admin_router.post("/users", response_model=None)

@@ -229,6 +229,22 @@ class UserResponse(BaseSchema):
         json_encoders = {datetime: lambda dt: dt.isoformat()}
 
 
+class UserResponseWithoutPassword(BaseSchema):
+    user_id: int
+    uuid: str
+    username: str
+    email: EmailStr
+    first_name: str
+    last_name: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    roles: List[str] = Field(default_factory=list, description="List of user roles")
+
+    class Config:
+        json_encoders = {datetime: lambda dt: dt.isoformat()}
+
+
 class ExistingUserResponse(BaseModel):
     message: str
     existing_user: dict

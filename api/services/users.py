@@ -606,7 +606,6 @@ def user_to_response(user: User, db: Session) -> Dict[str, Any]:
             "status": user.status_value,
             "created_at": user.created_at_value,
             "updated_at": user.updated_at_value,
-            "password_hash": user.password_hash,  # Use password_hash field
             "roles": role_names,  # Always include roles
         }
 
@@ -621,6 +620,148 @@ def user_to_response(user: User, db: Session) -> Dict[str, Any]:
 def admin_required(func):
     """
     Flexible admin_required decorator that works with both sync and async functions.
+    """
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        # Extract current_user and db from kwargs
+        current_user = kwargs.get('current_user')
+        db = kwargs.get('db')
+        
+        if not current_user or not db:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        
+        # Check if user has admin or super_admin role using select()
+        stmt = (
+            select(UserRole)
+            .join(Role)
+            .where(
+                and_(
+                    UserRole.user_id == current_user.user_id,
+                    UserRole.active.is_(True),
+                    Role.role_name.in_(["admin", "super_admin"]),
+                )
+            )
+        )
+        admin_role = db.execute(stmt).scalar_one_or_none()
+
+        if not admin_role:
+            raise HTTPException(status_code=403, detail="Admin privileges required")
+        
+        # Call the function (sync or async)
+        result = func(*args, **kwargs)
+        return result
+
+    @wraps(func)
+    async def async_wrapper(*args, **kwargs):
+        # Extract current_user and db from kwargs
+        current_user = kwargs.get('current_user')
+        db = kwargs.get('db')
+        
+        if not current_user or not db:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        
+        # Check if user has admin or super_admin role using select()
+        stmt = (
+            select(UserRole)
+            .join(Role)
+            .where(
+                and_(
+                    UserRole.user_id == current_user.user_id,
+                    UserRole.active.is_(True),
+                    Role.role_name.in_(["admin", "super_admin"]),
+                )
+            )
+        )
+        admin_role = db.execute(stmt).scalar_one_or_none()
+
+        if not admin_role:
+            raise HTTPException(status_code=403, detail="Admin privileges required")
+        
+        # Call the async function
+        result = await func(*args, **kwargs)
+        return result
+
+    # Return the appropriate wrapper based on whether the function is async
+    if inspect_module.iscoroutinefunction(func):
+        return async_wrapper
+    else:
+        return wrapper
+
+
+def admin_get_users(func):
+    """
+    Flexible admin_get_users decorator that works with both sync and async functions.
+    """
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        # Extract current_user and db from kwargs
+        current_user = kwargs.get('current_user')
+        db = kwargs.get('db')
+        
+        if not current_user or not db:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        
+        # Check if user has admin or super_admin role using select()
+        stmt = (
+            select(UserRole)
+            .join(Role)
+            .where(
+                and_(
+                    UserRole.user_id == current_user.user_id,
+                    UserRole.active.is_(True),
+                    Role.role_name.in_(["admin", "super_admin"]),
+                )
+            )
+        )
+        admin_role = db.execute(stmt).scalar_one_or_none()
+
+        if not admin_role:
+            raise HTTPException(status_code=403, detail="Admin privileges required")
+        
+        # Call the function (sync or async)
+        result = func(*args, **kwargs)
+        return result
+
+    @wraps(func)
+    async def async_wrapper(*args, **kwargs):
+        # Extract current_user and db from kwargs
+        current_user = kwargs.get('current_user')
+        db = kwargs.get('db')
+        
+        if not current_user or not db:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        
+        # Check if user has admin or super_admin role using select()
+        stmt = (
+            select(UserRole)
+            .join(Role)
+            .where(
+                and_(
+                    UserRole.user_id == current_user.user_id,
+                    UserRole.active.is_(True),
+                    Role.role_name.in_(["admin", "super_admin"]),
+                )
+            )
+        )
+        admin_role = db.execute(stmt).scalar_one_or_none()
+
+        if not admin_role:
+            raise HTTPException(status_code=403, detail="Admin privileges required")
+        
+        # Call the async function
+        result = await func(*args, **kwargs)
+        return result
+
+    # Return the appropriate wrapper based on whether the function is async
+    if inspect_module.iscoroutinefunction(func):
+        return async_wrapper
+    else:
+        return wrapper
+
+
+def admin_get_users_without_password(func):
+    """
+    Flexible admin_get_users_without_password decorator that works with both sync and async functions.
     """
     @wraps(func)
     def wrapper(*args, **kwargs):
