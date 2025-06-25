@@ -7,6 +7,7 @@ from api.services.users import get_current_user, get_user_by_uuid
 import datetime
 from typing import List, Sequence
 from api.schemas import UserResponse
+from functools import wraps
 
 def check_admin(db: Session, current_user: User) -> bool:
     """Helper function to check if a user has admin or super_admin privileges"""
@@ -163,4 +164,13 @@ async def unblock_user(user_uuid: str, db: Session, current_user: User) -> dict:
     db.commit()
     
     return {"detail": "User unblocked successfully"}
+
+def role_required(required_roles: List[str]):
+    def decorator(func: AsyncCallable[T]) -> AsyncCallable[T]:
+        @wraps(func)
+        async def wrapper(*args, current_user: User, db: Session, **kwargs) -> T:
+            # ... logic ...
+            return await func(*args, current_user=current_user, db=db, **kwargs)
+        return wrapper
+    return decorator
 

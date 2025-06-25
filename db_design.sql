@@ -1,4 +1,3 @@
-
 -- users and profile module tables 
 
 -- ==============================
@@ -42,6 +41,17 @@ CREATE TABLE users (
     UNIQUE KEY ux_users_email (email)
 );
 
+-- 3. work_order_assignments
+CREATE TABLE work_order_assignments (
+    assignment_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    work_order_id BIGINT NOT NULL,
+    agent_id BIGINT NOT NULL,
+    assigned_by BIGINT NOT NULL,
+    reassigned BOOLEAN DEFAULT FALSE,
+    reassignment_reason TEXT,
+    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(75) NULL DEFAULT NULL,
+    active TINYINT(1) NULL DEFAULT '1',
 
 -- ==============================
 -- ROLES TABLE
@@ -969,3 +979,132 @@ CREATE TABLE user_notification_preferences (
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
     UNIQUE KEY uq_user_notification_pref (user_id, notification_type, channel)
 );
+  ALTER TABLE work_order_assignments ADD COLUMN subject VARCHAR(255);
+  
+  CREATE TABLE work_order_templates (
+    template_id BIGSERIAL PRIMARY KEY,
+    work_order_type VARCHAR(10) NOT NULL,
+    form_type VARCHAR(100) NOT NULL,
+    template JSONB NOT NULL,
+    version VARCHAR(20) DEFAULT '1.0',
+    active BOOLEAN DEFAULT TRUE,
+    created_by BIGINT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (created_by) REFERENCES users(user_id)
+);
+
+CREATE TABLE IF NOT EXISTS work_order_forms (
+    form_id BIGSERIAL PRIMARY KEY,
+    work_order_id BIGINT NOT NULL,
+    work_order_type VARCHAR(10) NOT NULL,
+    template_id BIGINT NOT NULL,
+    status VARCHAR(75) DEFAULT 'PENDING',
+    active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (work_order_id) REFERENCES work_orders(work_order_id),
+    FOREIGN KEY (template_id) REFERENCES work_order_templates(template_id)
+);
+
+CREATE TABLE work_order_formdata (
+    formdata_id BIGSERIAL PRIMARY KEY,
+    form_id BIGINT NOT NULL,
+    session_id VARCHAR(75) NOT NULL UNIQUE,
+    data JSONB NOT NULL,
+    progress DECIMAL(5,2) DEFAULT 0.00,
+    status VARCHAR(20) DEFAULT 'IN_PROGRESS',
+    current_step INTEGER DEFAULT 1,
+    form_type VARCHAR(10) DEFAULT 'ZDEV',
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    active BOOLEAN DEFAULT TRUE,
+    FOREIGN KEY (form_id) REFERENCES work_order_forms(form_id)
+);
+
+CREATE TABLE work_order_form_steps (
+    step_id BIGSERIAL PRIMARY KEY,
+    formdata_id BIGINT NOT NULL,
+    step_number INTEGER NOT NULL,
+    step_title VARCHAR(100) NOT NULL,
+    status VARCHAR(20) DEFAULT 'PENDING',
+    data JSONB,
+    validation_status BOOLEAN DEFAULT FALSE,
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    active BOOLEAN DEFAULT TRUE,
+    FOREIGN KEY (formdata_id) REFERENCES work_order_formdata(formdata_id)
+);
+
+CREATE TABLE work_order_form_attachments (
+    attachment_id BIGSERIAL PRIMARY KEY,
+    formdata_id BIGINT,
+    step_number INTEGER,
+    file_name VARCHAR(255) NOT NULL,
+    file_path TEXT NOT NULL,
+    file_type VARCHAR(50),
+    file_size BIGINT,
+    uploaded_by BIGINT,
+    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    active BOOLEAN DEFAULT TRUE,
+    FOREIGN KEY (formdata_id) REFERENCES work_order_formdata(formdata_id),
+    FOREIGN KEY (uploaded_by) REFERENCES users(user_id)
+);
+
+CREATE TABLE work_order_form_sessions (
+    session_id VARCHAR(75) PRIMARY KEY,
+    formdata_id BIGINT NOT NULL,
+    agent_id BIGINT NOT NULL,
+    device_info JSON,
+    start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    end_time TIMESTAMP,
+    sync_status VARCHAR(20) DEFAULT 'PENDING',
+    active BOOLEAN DEFAULT TRUE,
+    FOREIGN KEY (formdata_id) REFERENCES work_order_formdata(formdata_id),
+    FOREIGN KEY (agent_id) REFERENCES users(user_id)
+);
+
+CREATE TABLE work_order_form_audit (
+    audit_id BIGSERIAL PRIMARY KEY,
+    formdata_id BIGINT NOT NULL,
+    action VARCHAR(20) NOT NULL,
+    old_data JSONB,
+    new_data JSONB,
+    changed_by BIGINT NOT NULL,
+    changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    active BOOLEAN DEFAULT TRUE,
+    FOREIGN KEY (formdata_id) REFERENCES work_order_formdata(formdata_id),
+    FOREIGN KEY (changed_by) REFERENCES users(user_id)
+);
+
+CREATE TABLE work_order_form_validation_logs (
+    validation_id BIGSERIAL PRIMARY KEY,
+    formdata_id BIGINT NOT NULL,
+    step_number INTEGER NOT NULL,
+    field_name VARCHAR(100) NOT NULL,
+    error_message TEXT,
+    is_valid BOOLEAN DEFAULT FALSE,
+    validated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    active BOOLEAN DEFAULT TRUE,
+    FOREIGN KEY (formdata_id) REFERENCES work_order_formdata(formdata_id)
+);
+ALTER TABLE work_order_templates
+    ALTER COLUMN work_order_type TYPE VARCHAR(50);
+    
+ALTER TABLE work_order_forms
+    ALTER COLUMN work_order_type TYPE VARCHAR(50);
+
+ALTER TABLE work_order_formdata
+ALTER COLUMN form_type TYPE VARCHAR(32);
+
+ALTER TABLE work_order_form_steps
+ADD COLUMN form_id INTEGER;
+
+ALTER TABLE work_order_form_steps
+ADD COLUMN form_id INTEGER REFERENCES work_order_forms(form_id);
+
+
+-- 1. Add the template_id column (nullable)
+ALTER TABLE work_orders ADD COLUMN template_id BIGINT;
+ALTER TABLE work_orders
+  ADD CONSTRAINT fk_work_orders_template_id
+  FOREIGN KEY (template_id) REFERENCES work_order_templates(template_id)
+  ON DELETE SET NULL;
