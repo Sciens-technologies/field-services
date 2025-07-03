@@ -1,6 +1,15 @@
 from datetime import datetime
-from typing import Optional, cast
-from fastapi import APIRouter, Depends, HTTPException, status, Body, Request, Response
+from typing import Optional, cast, List, Any
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    status,
+    Body,
+    Request,
+    Response,
+    Path,
+)
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, select, update, func
 from sqlalchemy.exc import IntegrityError
@@ -11,35 +20,42 @@ import asyncio
 
 from db.database import get_db
 from db.models import (
-    WorkOrder, WorkOrderAssignment, User, UserActivityLog, 
-    WorkOrderStatusLog
+    WorkOrder,
+    WorkOrderAssignment,
+    User,
+    UserActivityLog,
+    WorkOrderStatusLog,
+    WorkOrderTemplate,
+    WorkOrderStatus,
 )
 from api.schemas import (
     WorkOrderAssignmentCreate,
     WorkOrderAssignmentResponse,
     WorkOrderStatus,
     WorkOrderDetailResponse,
-    WorkOrderStatusLogResponse
+    WorkOrderStatusLogResponse,
 )
 from auth.auth import get_current_user
-from api.services.users import get_user_roles
+from api.services.users import get_user_roles, role_required
 
-router = APIRouter(
-    prefix="/work-orders",
-    tags=["work-orders"]
-)
+router = APIRouter(prefix="/work-orders", tags=["work-orders"])
+
 
 # Additional schemas for reassignment and acknowledgment
 class WorkOrderReassignmentCreate(BaseModel):
     agent_id: int
+    subject: Optional[str] = None
     reassignment_reason: Optional[str] = None
+
 
 class WorkOrderAcknowledgmentCreate(BaseModel):
     status: str
     remarks: Optional[str] = None
 
+
 class WorkOrderStartRequest(BaseModel):
     work_order_id: int
+
 
 class WorkOrderStartResponse(BaseModel):
     work_order_id: int
@@ -48,90 +64,213 @@ class WorkOrderStartResponse(BaseModel):
     updated_at: datetime
     message: str
 
+
+@router.get("/status-summary")
+@role_required(["admin", "super_admin", "supervisor"])
+async def work_order_status_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get a summary of work orders by status (pending, in progress, completed, etc.).
+    Always returns all statuses, even if their count is zero.
+    """
+    # Step 1: Get all possible statuses
+    all_statuses = [status.value for status in WorkOrderStatus]
+
+    # Step 2: Initialize all counts to 0
+    status_counts = {status: 0 for status in all_statuses}
+
+    # Step 3: Query actual counts from the database
+    db_counts = (
+        db.query(WorkOrder.status, func.count(WorkOrder.work_order_id))
+        .group_by(WorkOrder.status)
+        .all()
+    )
+    for status, count in db_counts:
+        # If status is an enum, use .value, else use as is
+        key = status.value if hasattr(status, 'value') else str(status)
+        status_counts[key] = count
+
+    # Step 4: Return the full dictionary
+    return status_counts
+
+
+@router.get("/list", response_model=List[WorkOrderDetailResponse])
+@role_required(["admin", "super_admin", "supervisor"])
+async def get_all_work_orders(
+    category: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Get all work orders, optionally filtered by category (zdev, znew, zddr).
+    """
+    try:
+        query = db.query(WorkOrder).filter(WorkOrder.active.is_(True))
+        if category:
+            # Join with WorkOrderTemplate to filter by template category
+            query = query.join(WorkOrderTemplate, WorkOrder.template_id == WorkOrderTemplate.template_id)
+            query = query.filter(WorkOrderTemplate.category.ilike(category))
+        work_orders = query.all()
+        result = []
+        for work_order in work_orders:
+            # Fetch template to get category
+            template = None
+            template_id = getattr(work_order, 'template_id', None)
+            if template_id is not None:
+                template = db.query(WorkOrderTemplate).filter_by(template_id=template_id).first()
+            category_val = getattr(template, 'category', 'ZDEV') if template else 'ZDEV'
+
+            # Get assignments and status logs
+            assignments = db.query(WorkOrderAssignment).filter(
+                WorkOrderAssignment.work_order_id == work_order.work_order_id,
+                WorkOrderAssignment.active.is_(True),
+            ).all()
+            status_logs = db.query(WorkOrderStatusLog).filter(
+                WorkOrderStatusLog.work_order_id == work_order.work_order_id
+            ).all()
+            assignment_responses = [
+                WorkOrderAssignmentResponse(
+                    assignment_id=int(getattr(a, "assignment_id")),
+                    work_order_id=int(getattr(a, "work_order_id")),
+                    wo_number=str(getattr(work_order, "wo_number")),
+                    agent_id=int(getattr(a, "agent_id")),
+                    reassigned=bool(getattr(a, "reassigned")),
+                    assigned_at=getattr(a, "assigned_at"),
+                    status=str(getattr(a, "status")) if getattr(a, "status") is not None else None,
+                    active=bool(getattr(a, "active")),
+                )
+                for a in assignments
+            ]
+            status_log_responses = [
+                WorkOrderStatusLogResponse(
+                    status_log_id=int(getattr(s, "status_log_id")),
+                    status=str(getattr(s, "status")),
+                    changed_at=getattr(s, "changed_at"),
+                    changed_by=int(getattr(s, "changed_by")),
+                )
+                for s in status_logs
+            ]
+            result.append(WorkOrderDetailResponse(
+                work_order_id=int(getattr(work_order, "work_order_id")),
+                wo_number=str(getattr(work_order, "wo_number")),
+                title=str(getattr(work_order, "title")),
+                description=str(getattr(work_order, "description")) if getattr(work_order, "description") is not None else None,
+                work_order_type=str(getattr(work_order, "work_order_type")) if getattr(work_order, "work_order_type") is not None else None,
+                customer_id=str(getattr(work_order, "customer_id")) if getattr(work_order, "customer_id") is not None else None,
+                customer_name=str(getattr(work_order, "customer_name")) if getattr(work_order, "customer_name") is not None else None,
+                scheduled_date=getattr(work_order, "scheduled_date"),
+                due_date=getattr(work_order, "due_date"),
+                priority=str(getattr(work_order, "priority")),
+                status=str(getattr(work_order, "status")),
+                created_by=int(getattr(work_order, "created_by")),
+                work_centre_id=int(getattr(work_order, "work_centre_id")),
+                created_at=getattr(work_order, "created_at"),
+                updated_at=getattr(work_order, "updated_at"),
+                active=bool(getattr(work_order, "active")),
+                assignments=assignment_responses,
+                status_logs=status_log_responses,
+                category=category_val
+            ))
+        return result
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post(
     "/assign",
     response_model=WorkOrderAssignmentResponse,
     summary="Assign a work order to an agent",
     description="Assigns a work order to a specified agent. The work order must be in PENDING or NEW status.",
-    status_code=status.HTTP_201_CREATED
+    status_code=status.HTTP_201_CREATED,
 )
+@role_required(["admin", "super_admin", "supervisor"])
 async def assign_work_order(
     assignment: WorkOrderAssignmentCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Assign a work order to an agent.
-    
+
     Args:
-        assignment: The work order assignment details (work_order_id and agent_id)
+        assignment: The work order assignment details (wo_number and agent_id)
         current_user: Currently authenticated user (will be used as assigned_by)
         db: Database session
-        
+
     Returns:
         WorkOrderAssignmentResponse: The created assignment
-        
+
     Raises:
         HTTPException: If work order or agent not found, or if work order status is invalid
     """
     try:
-        # Validate input: require either work_order_id or wo_number
-        if not getattr(assignment, 'work_order_id', None) and not getattr(assignment, 'wo_number', None):
-            raise HTTPException(status_code=422, detail="Either work_order_id or wo_number must be provided.")
-        # Lookup work order by ID or wo_number
-        work_order = None
-        if getattr(assignment, 'work_order_id', None):
-            stmt = select(WorkOrder).where(
-                and_(
-                    WorkOrder.work_order_id == assignment.work_order_id,
-                    WorkOrder.active.is_(True)
-                )
+        # Require wo_number
+        if not getattr(assignment, "wo_number", None):
+            raise HTTPException(
+                status_code=422,
+                detail="wo_number must be provided.",
             )
-            work_order = db.execute(stmt).scalar_one_or_none()
+        # Lookup work order by wo_number
+        work_order = db.query(WorkOrder).filter(WorkOrder.wo_number == assignment.wo_number, WorkOrder.active.is_(True)).first()
         if not work_order:
-            raise HTTPException(status_code=404, detail="Work order not found or inactive")
+            raise HTTPException(
+                status_code=404, detail="Work order not found or inactive"
+            )
         work_order_status = db.scalar(
-            select(WorkOrder.status).where(WorkOrder.work_order_id == work_order.work_order_id)
+            select(WorkOrder.status).where(
+                WorkOrder.wo_number == assignment.wo_number
+            )
         )
         # Only allow assignment if status is PENDING or NEW
         if work_order_status not in [WorkOrderStatus.PENDING, "NEW"]:
-            raise HTTPException(status_code=400, detail="Work order must be in PENDING or NEW status to assign")
+            raise HTTPException(
+                status_code=400,
+                detail="Work order must be in PENDING or NEW status to assign",
+            )
         # Validate agent
         stmt = select(User).where(
-            and_(
-                User.user_id == assignment.agent_id,
-                User.activated.is_(True)
-            )
+            and_(User.user_id == assignment.agent_id, User.activated.is_(True))
         )
         agent = db.execute(stmt).scalar_one_or_none()
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found or inactive")
         # Check agent's active (IN_PROGRESS) assignments
         active_count = db.scalar(
-            select(func.count()).select_from(WorkOrderAssignment)
-            .join(WorkOrder, WorkOrderAssignment.work_order_id == WorkOrder.work_order_id)
+            select(func.count())
+            .select_from(WorkOrderAssignment)
+            .join(
+                WorkOrder, WorkOrderAssignment.work_order_id == WorkOrder.work_order_id
+            )
             .where(
                 and_(
                     WorkOrderAssignment.agent_id == assignment.agent_id,
                     WorkOrderAssignment.active.is_(True),
-                    WorkOrder.status == WorkOrderStatus.IN_PROGRESS
+                    WorkOrder.status == WorkOrderStatus.IN_PROGRESS,
                 )
             )
         )
         if active_count is None:
             active_count = 0
         if active_count >= 5:
-            raise HTTPException(status_code=400, detail="Agent already has 5 active (IN_PROGRESS) work orders")
+            raise HTTPException(
+                status_code=400,
+                detail="Agent already has 5 active (IN_PROGRESS) work orders",
+            )
         # Check for existing active assignment
         stmt = select(WorkOrderAssignment).where(
             and_(
                 WorkOrderAssignment.work_order_id == work_order.work_order_id,
-                WorkOrderAssignment.active.is_(True)
+                WorkOrderAssignment.active.is_(True),
             )
         )
         existing_assignment = db.execute(stmt).scalar_one_or_none()
         if existing_assignment:
-            raise HTTPException(status_code=400, detail="Work order already has an active assignment")
+            raise HTTPException(
+                status_code=400, detail="Work order already has an active assignment"
+            )
         # Create assignment
         new_assignment = WorkOrderAssignment(
             work_order_id=work_order.work_order_id,
@@ -140,7 +279,7 @@ async def assign_work_order(
             reassigned=False,
             assigned_at=datetime.utcnow(),
             status="PENDING",
-            active=True
+            active=True,
         )
         db.add(new_assignment)
         # Log activity
@@ -149,7 +288,7 @@ async def assign_work_order(
             actor_id=current_user.user_id,
             action="assign_work_order",
             details=f"Assigned work order {work_order.wo_number} to agent {assignment.agent_id}",
-            timestamp=datetime.utcnow()
+            timestamp=datetime.utcnow(),
         )
         db.add(log)
         db.commit()
@@ -163,7 +302,7 @@ async def assign_work_order(
             reassigned=assignment_dict["reassigned"],
             assigned_at=assignment_dict["assigned_at"],
             status=assignment_dict["status"],
-            active=assignment_dict["active"]
+            active=assignment_dict["active"],
         )
     except IntegrityError as e:
         db.rollback()
@@ -174,31 +313,33 @@ async def assign_work_order(
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.put(
     "/{assignment_id}/reassign",
     response_model=WorkOrderAssignmentResponse,
     summary="Reassign a work order to a different agent",
     description="Reassigns a work order from its current agent to a new agent. The work order must be in PENDING, NEW, or REJECTED status.",
-    status_code=status.HTTP_200_OK
+    status_code=status.HTTP_200_OK,
 )
+@role_required(["admin", "super_admin", "supervisor"])
 async def reassign_work_order(
     assignment_id: int,
     reassignment: WorkOrderReassignmentCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Reassign a work order to a different agent.
-    
+
     Args:
         assignment_id: The ID of the current assignment
         reassignment: The reassignment details (new agent_id and optional reason)
         current_user: Currently authenticated user (will be used as assigned_by)
         db: Database session
-        
+
     Returns:
         WorkOrderAssignmentResponse: The new assignment
-        
+
     Raises:
         HTTPException: If work order or agent not found, or if work order status is invalid
     """
@@ -207,7 +348,7 @@ async def reassign_work_order(
         stmt = select(WorkOrderAssignment).where(
             and_(
                 WorkOrderAssignment.assignment_id == assignment_id,
-                WorkOrderAssignment.active.is_(True)
+                WorkOrderAssignment.active.is_(True),
             )
         )
         current_assignment = db.execute(stmt).scalar_one_or_none()
@@ -222,107 +363,159 @@ async def reassign_work_order(
         # If still not found, try to get the most recent REJECTED assignment for the same work_order
         if not current_assignment:
             # Find the most recent REJECTED assignment for this work order
-            stmt = select(WorkOrderAssignment).where(
-                and_(
-                    WorkOrderAssignment.work_order_id == assignment_id,  # fallback: assignment_id is work_order_id
-                    WorkOrderAssignment.status == "REJECTED"
+            stmt = (
+                select(WorkOrderAssignment)
+                .where(
+                    and_(
+                        WorkOrderAssignment.work_order_id
+                        == assignment_id,  # fallback: assignment_id is work_order_id
+                        WorkOrderAssignment.status == "REJECTED",
+                    )
                 )
-            ).order_by(WorkOrderAssignment.assigned_at.desc())
+                .order_by(WorkOrderAssignment.assigned_at.desc())
+            )
             current_assignment = db.execute(stmt).scalar_one_or_none()
 
         if not current_assignment:
-            raise HTTPException(status_code=404, detail="No assignment found to reassign")
-        
+            raise HTTPException(
+                status_code=404, detail="No assignment found to reassign"
+            )
+
         # Get work order
-        work_order = db.query(WorkOrder).options(
-            joinedload(WorkOrder.assignments),
-            joinedload(WorkOrder.status_logs)
-        ).filter(
-            WorkOrder.work_order_id == current_assignment.work_order_id,
-            WorkOrder.active.is_(True)
-        ).first()
+        work_order = (
+            db.query(WorkOrder)
+            .options(
+                joinedload(WorkOrder.assignments), joinedload(WorkOrder.status_logs)
+            )
+            .filter(
+                WorkOrder.work_order_id == current_assignment.work_order_id,
+                WorkOrder.active.is_(True),
+            )
+            .first()
+        )
         if not work_order:
             raise HTTPException(status_code=404, detail="Work order not found")
-        
+
         # Get work order status
         work_order_status = db.scalar(
-            select(WorkOrder.status).where(WorkOrder.work_order_id == work_order.work_order_id)
+            select(WorkOrder.status).where(
+                WorkOrder.work_order_id == work_order.work_order_id
+            )
         )
         # Only allow reassignment if status is PENDING, NEW, or REJECTED
-        if work_order_status not in [WorkOrderStatus.PENDING, "NEW", WorkOrderStatus.REJECTED, "REJECTED"]:
-            raise HTTPException(status_code=400, detail="Work order must be in PENDING, NEW, or REJECTED status to reassign")
-        
+        if work_order_status not in [
+            WorkOrderStatus.PENDING,
+            "NEW",
+            WorkOrderStatus.REJECTED,
+            "REJECTED",
+        ]:
+            raise HTTPException(
+                status_code=400,
+                detail="Work order must be in PENDING, NEW, or REJECTED status to reassign",
+            )
+
+        # Check if current assignment is already ACCEPTED - prevent reassignment of accepted work orders
+        current_assignment_status = db.scalar(
+            select(WorkOrderAssignment.status).where(
+                WorkOrderAssignment.assignment_id == current_assignment.assignment_id
+            )
+        )
+        if current_assignment_status == "ACCEPTED":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot reassign work order that has been acknowledged as ACCEPTED. Only REJECTED work orders can be reassigned.",
+            )
+
+        # Only allow reassignment of PENDING or REJECTED assignments
+        if current_assignment_status not in ["PENDING", "REJECTED"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot reassign work order with assignment status '{current_assignment_status}'. Only PENDING or REJECTED assignments can be reassigned.",
+            )
+
         # Validate new agent
         stmt = select(User).where(
-            and_(
-                User.user_id == reassignment.agent_id,
-                User.activated.is_(True)
-            )
+            and_(User.user_id == reassignment.agent_id, User.activated.is_(True))
         )
         agent = db.execute(stmt).scalar_one_or_none()
         if not agent:
-            raise HTTPException(status_code=404, detail="New agent not found or inactive")
-        
+            raise HTTPException(
+                status_code=404, detail="New agent not found or inactive"
+            )
+
         # Check agent's active (IN_PROGRESS) assignments
         active_count = db.scalar(
-            select(func.count()).select_from(WorkOrderAssignment)
-            .join(WorkOrder, WorkOrderAssignment.work_order_id == WorkOrder.work_order_id)
+            select(func.count())
+            .select_from(WorkOrderAssignment)
+            .join(
+                WorkOrder, WorkOrderAssignment.work_order_id == WorkOrder.work_order_id
+            )
             .where(
                 and_(
                     WorkOrderAssignment.agent_id == reassignment.agent_id,
                     WorkOrderAssignment.active.is_(True),
-                    WorkOrder.status == WorkOrderStatus.IN_PROGRESS
+                    WorkOrder.status == WorkOrderStatus.IN_PROGRESS,
                 )
             )
         )
         if active_count is None:
             active_count = 0
         if active_count >= 5:
-            raise HTTPException(status_code=400, detail="Agent already has 5 active (IN_PROGRESS) work orders")
-        
+            raise HTTPException(
+                status_code=400,
+                detail="Agent already has 5 active (IN_PROGRESS) work orders",
+            )
+
         # Get current agent ID
         current_agent_id = db.scalar(
-            select(WorkOrderAssignment.agent_id)
-            .where(WorkOrderAssignment.assignment_id == current_assignment.assignment_id)
+            select(WorkOrderAssignment.agent_id).where(
+                WorkOrderAssignment.assignment_id == current_assignment.assignment_id
+            )
         )
-        
+
         # Prevent reassignment to same agent
         if current_agent_id == reassignment.agent_id:
-            raise HTTPException(status_code=400, detail="Cannot reassign to the same agent")
-        
+            raise HTTPException(
+                status_code=400, detail="Cannot reassign to the same agent"
+            )
+
         # Create new assignment
         new_assignment = WorkOrderAssignment(
             work_order_id=current_assignment.work_order_id,
             agent_id=reassignment.agent_id,
             assigned_by=current_user.user_id,
             reassigned=True,
+            subject=reassignment.subject,
+            reassignment_reason=reassignment.reassignment_reason,
             assigned_at=datetime.utcnow(),
             status="PENDING",
-            active=True
+            active=True,
         )
         db.add(new_assignment)
-        
+
         # Deactivate current assignment
         update_stmt = (
             update(WorkOrderAssignment)
-            .where(WorkOrderAssignment.assignment_id == current_assignment.assignment_id)
+            .where(
+                WorkOrderAssignment.assignment_id == current_assignment.assignment_id
+            )
             .values(active=False)
         )
         db.execute(update_stmt)
-        
+
         # Log activity with reassignment reason
         log = UserActivityLog(
             user_id=reassignment.agent_id,
             actor_id=current_user.user_id,
             action="reassign_work_order",
             details=f"Reassigned work order {work_order.wo_number} from agent {current_agent_id} to agent {reassignment.agent_id}. Reason: {reassignment.reassignment_reason or ''}",
-            timestamp=datetime.utcnow()
+            timestamp=datetime.utcnow(),
         )
         db.add(log)
-        
+
         db.commit()
         db.refresh(new_assignment)
-        
+
         # Convert model to response schema
         assignment_dict = new_assignment.__dict__
         return WorkOrderAssignmentResponse(
@@ -333,9 +526,9 @@ async def reassign_work_order(
             reassigned=assignment_dict["reassigned"],
             assigned_at=assignment_dict["assigned_at"],
             status=assignment_dict["status"],
-            active=assignment_dict["active"]
+            active=assignment_dict["active"],
         )
-        
+
     except IntegrityError as e:
         db.rollback()
         raise HTTPException(status_code=400, detail="Invalid reference in request")
@@ -345,98 +538,116 @@ async def reassign_work_order(
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.post(
-    "/{work_order_id}/acknowledge",
+    "/{wo_number}/acknowledge",
     response_model=WorkOrderAssignmentResponse,
     summary="Acknowledge a work order assignment",
-    description="Allows an agent to acknowledge their assigned work order. This updates the assignment status to 'ACCEPTED' or 'REJECTED' and optionally records remarks.",
-    status_code=status.HTTP_200_OK
+    description="Allows an agent or supervisor to acknowledge a work order assignment. This updates the assignment status to 'ACCEPTED' or 'REJECTED' and optionally records remarks.",
+    status_code=status.HTTP_200_OK,
 )
+@role_required(["admin", "super_admin", "supervisor", "agent"])
 async def acknowledge_work_order(
-    work_order_id: int,
+    wo_number: str,
     acknowledgment: WorkOrderAcknowledgmentCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Acknowledge a work order assignment.
-    
-    Args:
-        work_order_id: The ID of the work order to acknowledge
-        acknowledgment: The acknowledgment details (status and optional remarks)
-        current_user: Currently authenticated user (must be the assigned agent)
-        db: Database session
-        
-    Returns:
-        WorkOrderAssignmentResponse: The updated assignment
-        
-    Raises:
-        HTTPException: If work order not found, or if user is not the assigned agent
+    If accepted, set work order status to IN_PROGRESS.
+    If rejected and no other active assignments, keep as PENDING or set to REJECTED.
     """
     try:
         # Validate status
         valid_statuses = {"ACCEPTED", "REJECTED"}
         status_value = acknowledgment.status.upper() if acknowledgment.status else None
         if status_value not in valid_statuses:
-            raise HTTPException(status_code=422, detail="Status must be either 'ACCEPTED' or 'REJECTED'.")
-        if status_value == "REJECTED" and (not acknowledgment.remarks or not acknowledgment.remarks.strip()):
-            raise HTTPException(status_code=422, detail="Remarks are required when status is 'REJECTED'.")
+            raise HTTPException(
+                status_code=422,
+                detail="Status must be either 'ACCEPTED' or 'REJECTED'.",
+            )
+        if status_value == "REJECTED" and (
+            not acknowledgment.remarks or not acknowledgment.remarks.strip()
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Remarks are required when status is 'REJECTED'.",
+            )
 
         # Get the work order first to check if it exists and is active
-        work_order = db.query(WorkOrder).filter(
-            WorkOrder.work_order_id == work_order_id,
-            WorkOrder.active.is_(True)
-        ).first()
+        work_order = (
+            db.query(WorkOrder)
+            .filter(
+                WorkOrder.wo_number == wo_number, WorkOrder.active.is_(True)
+            )
+            .first()
+        )
         if not work_order:
-            raise HTTPException(status_code=404, detail="Work order not found or inactive")
+            raise HTTPException(
+                status_code=404, detail="Work order not found or inactive"
+            )
 
         # Get the active assignment for this work order
-        assignment = db.query(WorkOrderAssignment).filter(
-            WorkOrderAssignment.work_order_id == work_order_id,
-            WorkOrderAssignment.active.is_(True)
-        ).first()
+        assignment = (
+            db.query(WorkOrderAssignment)
+            .filter(
+                WorkOrderAssignment.wo_number == wo_number,
+                WorkOrderAssignment.active.is_(True),
+            )
+            .first()
+        )
         if not assignment:
-            raise HTTPException(status_code=404, detail="No active assignment found for this work order")
+            raise HTTPException(
+                status_code=404, detail="No active assignment found for this work order"
+            )
 
         # Get the agent_id as a plain value directly from the database
         agent_id_value = db.scalar(
             select(WorkOrderAssignment.agent_id).where(
-                WorkOrderAssignment.assignment_id == assignment.assignment_id
+                WorkOrderAssignment.wo_number == wo_number
             )
         )
         if agent_id_value is None:
-            raise HTTPException(status_code=500, detail="Assignment agent_id is not a valid value")
-        if not isinstance(agent_id_value, int):
-            raise HTTPException(status_code=500, detail="Assignment agent_id is not an integer value")
-        if agent_id_value != int(current_user.user_id):  # type: ignore
+            raise HTTPException(
+                status_code=500, detail="Assignment agent_id is not a valid value"
+            )
+        agent_id_value = int(agent_id_value)
+        # Check if current user is the assigned agent or has supervisor/admin role
+        user_id = current_user.user_id
+        if not isinstance(user_id, int):
+            user_id = int(getattr(current_user, 'user_id', 0))
+        user_roles = await get_user_roles(db, user_id)
+        is_supervisor_or_admin = any(role in ['supervisor', 'admin', 'super_admin'] for role in user_roles)
+        
+        if agent_id_value != int(current_user.user_id) and not is_supervisor_or_admin:  # type: ignore
             raise HTTPException(
                 status_code=403,
-                detail="Only the assigned agent can acknowledge this work order"
+                detail="Only the assigned agent or supervisor/admin can acknowledge this work order",
             )
 
         # Check if the work order is already acknowledged
         if assignment.status in ["ACCEPTED", "REJECTED"]:
             raise HTTPException(
                 status_code=400,
-                detail=f"Work order is already {assignment.status.lower()}"
+                detail=f"Work order is already {assignment.status.lower()}",
             )
 
         # Get work order status
         work_order_status = db.scalar(
-            select(WorkOrder.status).where(WorkOrder.work_order_id == work_order.work_order_id)
+            select(WorkOrder.status).where(
+                WorkOrder.wo_number == wo_number
+            )
         )
 
         # Update assignment status and deactivate if rejected
-        update_values = {
-            "status": status_value,
-            "updated_at": datetime.utcnow()
-        }
+        update_values = {"status": status_value, "updated_at": datetime.utcnow()}
         if status_value == "REJECTED":
             update_values["active"] = False
 
         update_stmt = (
             update(WorkOrderAssignment)
-            .where(WorkOrderAssignment.assignment_id == assignment.assignment_id)
+            .where(WorkOrderAssignment.wo_number == wo_number)
             .values(**update_values)
         )
         db.execute(update_stmt)
@@ -446,15 +657,52 @@ async def acknowledge_work_order(
             user_id=current_user.user_id,
             actor_id=current_user.user_id,
             action="acknowledge_work_order",
-            details=f"Acknowledged work order {work_order.wo_number} with status {status_value}. Remarks: {acknowledgment.remarks or 'None'}",
-            timestamp=datetime.utcnow()
+            details=f"Acknowledged work order {wo_number} with status {status_value}. Remarks: {acknowledgment.remarks or 'None'}",
+            timestamp=datetime.utcnow(),
         )
         db.add(log)
 
         db.commit()
         db.refresh(assignment)
 
-        # Convert model to response schema
+        # --- Status transition logic ---
+        if status_value == "ACCEPTED":
+            # Set work order status to IN_PROGRESS
+            db.query(WorkOrder).filter(WorkOrder.wo_number == wo_number).update({"status": "IN_PROGRESS"})
+            db.commit()
+            # Log status change
+            db.add(WorkOrderStatusLog(
+                work_order_id=work_order.work_order_id,
+                previous_status=work_order.status,
+                new_status="IN_PROGRESS",
+                changed_by=current_user.user_id,
+                reason="Assignment accepted",
+                changed_at=datetime.utcnow(),
+                status="ACTIVE",
+                active=True
+            ))
+            db.commit()
+        elif status_value == "REJECTED":
+            # If no other active assignments, optionally set to REJECTED
+            active_assignments = db.query(WorkOrderAssignment).filter(
+                WorkOrderAssignment.work_order_id == work_order.work_order_id,
+                WorkOrderAssignment.active.is_(True)
+            ).count()
+            if active_assignments == 0:
+                db.query(WorkOrder).filter(WorkOrder.wo_number == wo_number).update({"status": "REJECTED"})
+                db.commit()
+                db.add(WorkOrderStatusLog(
+                    work_order_id=work_order.work_order_id,
+                    previous_status=work_order.status,
+                    new_status="REJECTED",
+                    changed_by=current_user.user_id,
+                    reason="Assignment rejected and no active assignments",
+                    changed_at=datetime.utcnow(),
+                    status="ACTIVE",
+                    active=True
+                ))
+                db.commit()
+        # ... existing response logic ...
         assignment_dict = assignment.__dict__
         return WorkOrderAssignmentResponse(
             assignment_id=assignment_dict["assignment_id"],
@@ -464,7 +712,7 @@ async def acknowledge_work_order(
             reassigned=assignment_dict["reassigned"],
             assigned_at=assignment_dict["assigned_at"],
             status=status_value,
-            active=assignment_dict["active"]
+            active=assignment_dict["active"],
         )
     except HTTPException as he:
         raise he
@@ -472,195 +720,158 @@ async def acknowledge_work_order(
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get(
-    "/{work_order_id}",
+    "/{wo_number}",
     response_model=WorkOrderDetailResponse,
     summary="Get details of a work order",
     description="Retrieves detailed information about a work order, including its assignments and status logs.",
-    status_code=status.HTTP_200_OK
+    status_code=status.HTTP_200_OK,
 )
+@role_required(["admin", "super_admin", "supervisor", "agent"])
 async def get_work_order(
-    work_order_id: int,
-    db: Session = Depends(get_db)
+    wo_number: str, 
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Get details of a work order.
-    
+
     Args:
-        work_order_id: The ID of the work order to retrieve
+        wo_number: The wo_number of the work order to retrieve
         db: Database session
-        
+
     Returns:
         WorkOrderDetailResponse: The detailed information about the work order
-        
+
     Raises:
         HTTPException: If work order not found
     """
     try:
-        work_order = db.query(WorkOrder).options(
-            joinedload(WorkOrder.assignments),
-            joinedload(WorkOrder.status_logs)
-        ).filter(
-            WorkOrder.work_order_id == work_order_id,
-            WorkOrder.active.is_(True)
-        ).first()
+        work_order = (
+            db.query(WorkOrder)
+            .options(
+                joinedload(WorkOrder.assignments), joinedload(WorkOrder.status_logs)
+            )
+            .filter(
+                WorkOrder.wo_number == wo_number, WorkOrder.active.is_(True)
+            )
+            .first()
+        )
         if not work_order:
             raise HTTPException(status_code=404, detail="Work order not found")
 
-        assignments = db.query(WorkOrderAssignment).filter(
-            WorkOrderAssignment.work_order_id == work_order_id,
-            WorkOrderAssignment.active.is_(True)
-        ).all()
+        assignments = (
+            db.query(WorkOrderAssignment)
+            .filter(
+                WorkOrderAssignment.work_order_id == work_order.work_order_id,
+                WorkOrderAssignment.active.is_(True),
+            )
+            .all()
+        )
 
-        status_logs = db.query(WorkOrderStatusLog).filter(
-            WorkOrderStatusLog.work_order_id == work_order_id
-        ).all()
+        status_logs = (
+            db.query(WorkOrderStatusLog)
+            .filter(WorkOrderStatusLog.work_order_id == work_order.work_order_id)
+            .all()
+        )
 
         assignment_responses = [
             WorkOrderAssignmentResponse(
-                assignment_id=int(getattr(a, 'assignment_id')),
-                work_order_id=int(getattr(a, 'work_order_id')),
-                wo_number=str(getattr(work_order, 'wo_number')),
-                agent_id=int(getattr(a, 'agent_id')),
-                reassigned=bool(getattr(a, 'reassigned')),
-                assigned_at=getattr(a, 'assigned_at'),
-                status=str(getattr(a, 'status')) if getattr(a, 'status') is not None else None,
-                active=bool(getattr(a, 'active'))
-            ) for a in assignments
+                assignment_id=int(getattr(a, "assignment_id")),
+                work_order_id=int(getattr(a, "work_order_id")),
+                wo_number=str(getattr(work_order, "wo_number")),
+                agent_id=int(getattr(a, "agent_id")),
+                reassigned=bool(getattr(a, "reassigned")),
+                assigned_at=getattr(a, "assigned_at"),
+                status=str(getattr(a, "status"))
+                if getattr(a, "status") is not None
+                else None,
+                active=bool(getattr(a, "active")),
+            )
+            for a in assignments
         ]
 
         status_log_responses = [
             WorkOrderStatusLogResponse(
-                status_log_id=int(getattr(s, 'status_log_id')),
-                status=str(getattr(s, 'status')),
-                changed_at=getattr(s, 'changed_at'),
-                changed_by=int(getattr(s, 'changed_by'))
-            ) for s in status_logs
+                status_log_id=int(getattr(s, "status_log_id")),
+                status=str(getattr(s, "status")),
+                changed_at=getattr(s, "changed_at"),
+                changed_by=int(getattr(s, "changed_by")),
+            )
+            for s in status_logs
         ]
 
+        # Fetch the template to get the category
+        template_id = getattr(work_order, 'template_id', None)
+        template = None
+        if template_id is not None:
+            template = db.query(WorkOrderTemplate).filter_by(template_id=template_id).first()
+        category = getattr(template, 'category', 'ZDEV') if template else 'ZDEV'
+
         return WorkOrderDetailResponse(
-            work_order_id=int(getattr(work_order, 'work_order_id')),
-            wo_number=str(getattr(work_order, 'wo_number')),
-            title=str(getattr(work_order, 'title')),
-            description=str(getattr(work_order, 'description')) if getattr(work_order, 'description') is not None else None,
-            work_order_type=str(getattr(work_order, 'work_order_type')) if getattr(work_order, 'work_order_type') is not None else None,
-            customer_id=str(getattr(work_order, 'customer_id')) if getattr(work_order, 'customer_id') is not None else None,
-            customer_name=str(getattr(work_order, 'customer_name')) if getattr(work_order, 'customer_name') is not None else None,
-            scheduled_date=getattr(work_order, 'scheduled_date'),
-            due_date=getattr(work_order, 'due_date'),
-            priority=str(getattr(work_order, 'priority')),
-            status=str(getattr(work_order, 'status')),
-            created_by=int(getattr(work_order, 'created_by')),
-            work_centre_id=int(getattr(work_order, 'work_centre_id')),
-            created_at=getattr(work_order, 'created_at'),
-            updated_at=getattr(work_order, 'updated_at'),
-            active=bool(getattr(work_order, 'active')),
+            work_order_id=int(getattr(work_order, "work_order_id")),
+            wo_number=str(getattr(work_order, "wo_number")),
+            title=str(getattr(work_order, "title")),
+            description=str(getattr(work_order, "description"))
+            if getattr(work_order, "description") is not None
+            else None,
+            work_order_type=str(getattr(work_order, "work_order_type"))
+            if getattr(work_order, "work_order_type") is not None
+            else None,
+            customer_id=str(getattr(work_order, "customer_id"))
+            if getattr(work_order, "customer_id") is not None
+            else None,
+            customer_name=str(getattr(work_order, "customer_name"))
+            if getattr(work_order, "customer_name") is not None
+            else None,
+            scheduled_date=getattr(work_order, "scheduled_date"),
+            due_date=getattr(work_order, "due_date"),
+            priority=str(getattr(work_order, "priority")),
+            status=str(getattr(work_order, "status")),
+            created_by=int(getattr(work_order, "created_by")),
+            work_centre_id=int(getattr(work_order, "work_centre_id")),
+            created_at=getattr(work_order, "created_at"),
+            updated_at=getattr(work_order, "updated_at"),
+            active=bool(getattr(work_order, "active")),
             assignments=assignment_responses,
-            status_logs=status_log_responses
+            status_logs=status_log_responses,
+            category=category
         )
     except HTTPException as he:
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post(
-    "/start",
-    response_model=WorkOrderStartResponse,
-    summary="Start a work order",
-    description="Starts a work order, updating its status to IN_PROGRESS and logging the change.",
-    status_code=status.HTTP_200_OK
-)
-async def start_work_order(
-    request: Request,
-    response: Response,
-    payload: WorkOrderStartRequest,
-    force: bool = False,
+
+# --- New endpoint to mark a work order as COMPLETED ---
+@router.post("/{wo_number}/complete", summary="Mark work order as completed")
+@role_required(["admin", "super_admin", "supervisor"])
+async def complete_work_order(
+    wo_number: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
-    Start a work order (set status to IN_PROGRESS).
+    Mark a work order as COMPLETED. Only allowed if status is IN_PROGRESS.
     """
-    try:
-        work_order_id = payload.work_order_id
-        if not work_order_id:
-            raise HTTPException(status_code=400, detail="Invalid work_order_id")
-        # Fetch work order
-        work_order = db.query(WorkOrder).filter(
-            WorkOrder.work_order_id == work_order_id,
-            WorkOrder.active.is_(True)
-        ).first()
-        if not work_order:
-            raise HTTPException(status_code=404, detail="Work order not found or inactive")
-        status_val = getattr(work_order, 'status', None)
-        if status_val not in [WorkOrderStatus.PENDING, "PENDING"]:
-            raise HTTPException(status_code=400, detail="Work order must be in PENDING status")
-        # Authorization
-        user_id_val = getattr(current_user, 'user_id', None)
-        if user_id_val is None or not isinstance(user_id_val, (int, float)):
-            raise HTTPException(status_code=500, detail="Invalid user_id on current_user")
-        user_roles = await get_user_roles(db, int(user_id_val))
-        is_admin = "admin" in user_roles
-        is_supervisor = "supervisor" in user_roles
-        created_by_val = getattr(work_order, 'created_by', None)
-        if created_by_val is None or not isinstance(created_by_val, (int, float)):
-            raise HTTPException(status_code=500, detail="Invalid created_by on work_order")
-        is_creator = (int(created_by_val) == int(user_id_val))
-        # Only the assigned agent can start the work order
-        is_assigned_agent = db.query(WorkOrderAssignment).filter(
-            WorkOrderAssignment.work_order_id == work_order_id,
-            WorkOrderAssignment.agent_id == int(user_id_val),
-            WorkOrderAssignment.active.is_(True)
-        ).count() > 0
-        if not is_assigned_agent:
-            raise HTTPException(status_code=403, detail="You are not assigned to this work order")
-        # Optimistic lock: check if already started
-        if str(work_order.status) == "IN_PROGRESS":
-            raise HTTPException(status_code=409, detail="Work order already started by another user")
-        # Update status using update statement
-        now = datetime.utcnow()
-        db.execute(
-            update(WorkOrder)
-            .where(WorkOrder.work_order_id == work_order_id)
-            .values(status="IN_PROGRESS", updated_at=now)
-        )
-        # Log status change
-        work_order_id_val = getattr(work_order, 'work_order_id', None)
-        wo_number_val = getattr(work_order, 'wo_number', None)
-        if work_order_id_val is None or wo_number_val is None:
-            raise HTTPException(status_code=500, detail="Invalid work_order_id or wo_number on work_order")
-        status_log = WorkOrderStatusLog(
-            work_order_id=int(work_order_id_val),
-            status="IN_PROGRESS",
-            changed_by=int(user_id_val),
-            changed_at=now,
-            reason="Work order started"
-        )
-        db.add(status_log)
-        # Log activity (optional)
-        log = UserActivityLog(
-            user_id=int(user_id_val),
-            actor_id=int(user_id_val),
-            action="start_work_order",
-            details=f"Started work order {str(wo_number_val)}",
-            timestamp=now
-        )
-        db.add(log)
-        db.commit()
-        # Refresh work_order to get updated values
-        db.refresh(work_order)
-        # Set Location header
-        response.headers["Location"] = f"/work-orders/{int(work_order_id_val)}"
-        updated_at_val = getattr(work_order, 'updated_at', now)
-        return WorkOrderStartResponse(
-            work_order_id=int(work_order_id_val),
-            wo_number=str(wo_number_val),
-            status="IN_PROGRESS",
-            updated_at=updated_at_val,
-            message="Work order started successfully"
-        )
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail="Database error occurred: " + str(e)) 
+    work_order = db.query(WorkOrder).filter(WorkOrder.wo_number == wo_number, WorkOrder.active.is_(True)).first()
+    if not work_order:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    if str(work_order.status) != "IN_PROGRESS":
+        raise HTTPException(status_code=400, detail="Work order must be IN_PROGRESS to complete")
+    previous_status = work_order.status
+    db.query(WorkOrder).filter(WorkOrder.wo_number == wo_number).update({"status": "COMPLETED"})
+    db.commit()
+    db.add(WorkOrderStatusLog(
+        work_order_id=work_order.work_order_id,
+        previous_status=previous_status,
+        new_status="COMPLETED",
+        changed_by=current_user.user_id,
+        reason="Work order completed",
+        changed_at=datetime.utcnow(),
+        status="ACTIVE",
+        active=True
+    ))
+    db.commit()
+    return {"detail": "Work order marked as COMPLETED"}

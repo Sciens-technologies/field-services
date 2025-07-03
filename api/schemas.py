@@ -3,8 +3,11 @@ from typing import List, Optional, Dict, Any, Union
 from pydantic import BaseModel, Field, EmailStr, validator
 from enum import Enum
 from datetime import datetime
+
+
 # If you use WorkOrderStatus Enum, import it like this:
 # from db.models import WorkOrderStatus
+
 
 # --- Enums ---
 class UserStatus(str, Enum):
@@ -12,6 +15,8 @@ class UserStatus(str, Enum):
     INACTIVE = "INACTIVE"
     BLOCKED = "BLOCKED"
     DELETED = "DELETED"
+    DEACTIVATED = "DEACTIVATED"
+
 
 class WorkOrderStatus(str, Enum):
     PENDING = "PENDING"
@@ -20,11 +25,13 @@ class WorkOrderStatus(str, Enum):
     CANCELLED = "CANCELLED"
     REJECTED = "REJECTED"
 
+
 class NotificationType(str, Enum):
     EMAIL = "EMAIL"
     SMS = "SMS"
     PUSH = "PUSH"
     IN_APP = "IN_APP"
+
 
 class RequestType(str, Enum):
     NEW_CONNECTION = "NEW_CONNECTION"
@@ -33,12 +40,17 @@ class RequestType(str, Enum):
     TERMINATION = "TERMINATION"
     OTHER = "OTHER"
 
+
 class DeviceStatus(str, Enum):
     REGISTERED = "REGISTERED"
+    UNREGISTERED = "UNREGISTERED"
+    IN_SERVICE = "IN_SERVICE"
+    OUT_OF_SERVICE = "OUT_OF_SERVICE"
     ACTIVE = "ACTIVE"
     BLOCKED = "BLOCKED"
     DEACTIVATED = "DEACTIVATED"
     READY_TO_ACTIVATE = "READY_TO_ACTIVATE"
+
 
 class DeviceSourceType(str, Enum):
     PURCHASED = "PURCHASED"
@@ -48,6 +60,7 @@ class DeviceSourceType(str, Enum):
     MANUFACTURED = "MANUFACTURED"
     OTHER = "OTHER"
 
+
 class DeviceSourceDestination(str, Enum):
     REGIONAL_PLANET = "REGIONAL_PLANET"
     CENTER_PLANET = "CENTER_PLANET"
@@ -55,13 +68,16 @@ class DeviceSourceDestination(str, Enum):
     WORK_CENTER = "WORK_CENTER"
     OTHER = "OTHER"
 
+
 class DeviceAssignmentRole(str, Enum):
     TECHNICIAN = "TECHNICIAN"
     SUPERVISOR = "SUPERVISOR"
     MANAGER = "MANAGER"
     ADMIN = "ADMIN"
     WAREHOUSE = "WAREHOUSE"
+    AGENT = "AGENT"
     OTHER = "OTHER"
+
 
 # --- Base Schemas ---
 class BaseSchema(BaseModel):
@@ -69,92 +85,106 @@ class BaseSchema(BaseModel):
         from_attributes = True
         arbitrary_types_allowed = True
 
+
 class LoginRequest(BaseSchema):
     """
     Schema for user login request.
-    
+
     Attributes:
         username (str): User's username or email
         password (str): User's password
     """
+
     username: str
     password: str
+
 
 class NotificationChannelPreferences(BaseModel):
     enabled: bool = True
     types: List[str] = []
 
+
 class NotificationPreferencesUpdate(BaseModel):
     """
     Schema for updating user notification preferences.
-    
+
     Attributes:
         email_enabled (bool): Whether to enable/disable email notifications
         sms_enabled (bool): Whether to enable/disable SMS notifications
         push_enabled (bool): Whether to enable/disable push notifications
     """
+
     email_enabled: bool = True
     sms_enabled: bool = True
     push_enabled: bool = True
 
+
 class NotificationPreferencesResponse(BaseModel):
     """
     Schema for user notification preferences response.
-    
+
     Attributes:
         user_id (int): User's ID
         email_enabled (bool): Whether email notifications are enabled
         sms_enabled (bool): Whether SMS notifications are enabled
         push_enabled (bool): Whether push notifications are enabled
     """
+
     user_id: int
     email_enabled: bool
     sms_enabled: bool
     push_enabled: bool
 
+
 class NotificationPreferencesUpdateFull(BaseModel):
     """
     Schema for updating detailed user notification preferences.
-    
+
     Attributes:
         email_notifications (Optional[Dict[str, bool]]): Email notification type preferences
         sms_notifications (Optional[Dict[str, bool]]): SMS notification type preferences
         push_notifications (Optional[Dict[str, bool]]): Push notification type preferences
     """
+
     email_notifications: Optional[Dict[str, bool]] = None
     sms_notifications: Optional[Dict[str, bool]] = None
     push_notifications: Optional[Dict[str, bool]] = None
 
+
 class NotificationPreferencesResponseFull(BaseModel):
     """
     Schema for detailed user notification preferences response.
-    
+
     Attributes:
         user_id (int): User's ID
         email_notifications (Dict[str, bool]): Email notification type preferences
         sms_notifications (Dict[str, bool]): SMS notification type preferences
         push_notifications (Dict[str, bool]): Push notification type preferences
     """
+
     user_id: int
     email_notifications: Dict[str, bool]
     sms_notifications: Dict[str, bool]
     push_notifications: Dict[str, bool]
 
+
 # --- User Schemas ---
 class UserBase(BaseSchema):
     """
     Base schema for user data containing common fields.
-    
+
     Attributes:
         username (str): Unique username for the user
         email (EmailStr): User's email address
         first_name (Optional[str]): User's first name
         last_name (Optional[str]): User's last name
     """
+
     username: str = Field(..., description="Unique username for the user")
     email: EmailStr = Field(..., description="User's email address")
     first_name: Optional[str] = Field(None, description="User's first name")
     last_name: Optional[str] = Field(None, description="User's last name")
+    address: Optional[str] = None
 
     class Config:
         json_schema_extra = {
@@ -162,21 +192,25 @@ class UserBase(BaseSchema):
                 "username": "johndoe",
                 "email": "john.doe@example.com",
                 "first_name": "John",
-                "last_name": "Doe"
+                "last_name": "Doe",
             }
         }
+
 
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
     email: EmailStr
     first_name: str = Field(..., min_length=1, max_length=50)
     last_name: str = Field(..., min_length=1, max_length=50)
-    roles: List[str] = Field(default_factory=list, description="List of role names to assign to the user")
+    address: Optional[str] = None
+
 
 class UserUpdate(BaseModel):
-    username: Optional[str] = Field(None, min_length=3, max_length=50)
+    username: Optional[str] = None
     first_name: Optional[str] = Field(None, min_length=1, max_length=50)
     last_name: Optional[str] = Field(None, min_length=1, max_length=50)
+    address: Optional[str] = None
+
 
 class UserResponse(BaseSchema):
     user_id: int
@@ -188,33 +222,68 @@ class UserResponse(BaseSchema):
     status: str
     created_at: datetime
     updated_at: datetime
+    password_hash: Optional[str] = None  # Include plain text password in response
+    roles: List[str] = Field(default_factory=list, description="List of user roles")
+    address: Optional[str] = None
 
     class Config:
-        json_encoders = {
-            datetime: lambda dt: dt.isoformat()
-        }
+        json_encoders = {datetime: lambda dt: dt.isoformat()}
+
+
+class UserResponseWithoutPassword(BaseSchema):
+    user_id: int
+    uuid: str
+    username: str
+    email: EmailStr
+    first_name: str
+    last_name: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    roles: List[str] = Field(default_factory=list, description="List of user roles")
+    address: Optional[str] = None
+    workcenter_id: Optional[int] = None
+    workcenter_name: Optional[str] = None
+    workcenter_created_at: Optional[datetime] = None
+    workcenter_status: Optional[str] = None
+
+    class Config:
+        json_encoders = {datetime: lambda dt: dt.isoformat()}
+
+
+class ExistingUserResponse(BaseModel):
+    message: str
+    existing_user: dict
+
 
 # --- Role Schemas ---
 class PermissionBase(BaseSchema):
     """
     Base schema for permissions.
-    
+
     Attributes:
         feature_name (str): The feature name for the permission
         description (Optional[str]): Description of the permission
     """
+
     feature_name: str = Field(..., description="The feature name for the permission")
-    description: Optional[str] = Field(None, description="Description of the permission")
+    description: Optional[str] = Field(
+        None, description="Description of the permission"
+    )
+
 
 class PermissionCreate(PermissionBase):
     """
     Schema for creating a new permission.
     """
+
     pass
+
 
 class PermissionCreateRequest(BaseSchema):
     name: str
     description: str = ""
+
 
 class PermissionResponse(BaseModel):
     permission_id: int
@@ -224,15 +293,21 @@ class PermissionResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
+
 class RoleBase(BaseModel):
     name: str = Field(..., description="Name of the role")
     description: Optional[str] = Field(None, description="Description of the role")
 
+
 class RoleCreate(RoleBase):
-    permission_ids: Optional[List[int]] = Field(None, description="List of permission IDs to assign")
+    permission_ids: Optional[List[int]] = Field(
+        None, description="List of permission IDs to assign"
+    )
+
 
 class RoleUpdate(RoleBase):
     pass
+
 
 class RoleResponse(RoleBase):
     id: int
@@ -241,9 +316,15 @@ class RoleResponse(RoleBase):
     class Config:
         from_attributes = True
 
+
 class PermissionAssignment(BaseModel):
-    add_permission_ids: Optional[List[int]] = Field(None, description="List of permission IDs to add")
-    remove_permission_ids: Optional[List[int]] = Field(None, description="List of permission IDs to remove")
+    add_permission_ids: Optional[List[int]] = Field(
+        None, description="List of permission IDs to add"
+    )
+    remove_permission_ids: Optional[List[int]] = Field(
+        None, description="List of permission IDs to remove"
+    )
+
 
 # --- Device Schemas ---
 class DeviceBase(BaseSchema):
@@ -252,8 +333,10 @@ class DeviceBase(BaseSchema):
     location: Optional[str] = None
     work_center_id: Optional[int] = None
 
+
 class DeviceCreate(DeviceBase):
     pass
+
 
 class DeviceUpdate(BaseSchema):
     model: Optional[str] = None
@@ -262,6 +345,7 @@ class DeviceUpdate(BaseSchema):
     work_center_id: Optional[int] = None
     active: Optional[bool] = None
 
+
 class DeviceResponse(DeviceBase):
     device_id: int
     status: DeviceStatus
@@ -269,6 +353,9 @@ class DeviceResponse(DeviceBase):
     created_at: datetime
     updated_at: datetime
     active: bool
+    work_order_count: int = 0
+    category: str
+
 
 class DeviceArtifactBase(BaseSchema):
     device_id: int
@@ -279,8 +366,10 @@ class DeviceArtifactBase(BaseSchema):
     acquisition_date: Optional[datetime] = None
     remarks: Optional[str] = None
 
+
 class DeviceArtifactCreate(DeviceArtifactBase):
     added_by: int
+
 
 class DeviceArtifactUpdate(BaseSchema):
     source_type: Optional[DeviceSourceType] = None
@@ -291,6 +380,7 @@ class DeviceArtifactUpdate(BaseSchema):
     status: Optional[str] = None
     active: Optional[bool] = None
 
+
 class DeviceArtifactResponse(DeviceArtifactBase):
     artifact_id: int
     added_by: int
@@ -298,14 +388,14 @@ class DeviceArtifactResponse(DeviceArtifactBase):
     active: bool
     created_at: datetime
 
+
 class DeviceAssignmentBase(BaseSchema):
-    device_id: int
     user_id: Optional[int] = None
-    role: Optional[DeviceAssignmentRole] = None
+
 
 class DeviceAssignmentCreate(DeviceAssignmentBase):
-    assigned_by_user_id: Optional[int] = None
-    assigned_by_role: Optional[DeviceAssignmentRole] = None
+    pass
+
 
 class DeviceAssignmentUpdate(BaseSchema):
     user_id: Optional[int] = None
@@ -315,6 +405,7 @@ class DeviceAssignmentUpdate(BaseSchema):
     status: Optional[str] = None
     active: Optional[bool] = None
 
+
 class DeviceAssignmentResponse(DeviceAssignmentBase):
     assignment_id: int
     assigned_by_user_id: Optional[int] = None
@@ -323,7 +414,14 @@ class DeviceAssignmentResponse(DeviceAssignmentBase):
     unassigned_at: Optional[datetime] = None
     status: Optional[str] = None
     active: bool
-    updated_at: Optional[datetime] = None
+    subject: Optional[str] = None
+    reassignment_reason: Optional[str] = None
+
+
+class BlockDeviceRequest(BaseModel):
+    block: bool  # True  ➜ set status to "BLOCKED"
+    reason: Optional[str] = ""
+
 
 # --- Work Order Schemas ---
 class WorkOrderBase(BaseSchema):
@@ -341,8 +439,10 @@ class WorkOrderBase(BaseSchema):
     priority: Optional[str] = "MEDIUM"
     work_centre_id: int
 
+
 class WorkOrderCreate(WorkOrderBase):
     created_by: int
+
 
 class WorkOrderUpdate(BaseSchema):
     title: Optional[str] = None
@@ -353,20 +453,25 @@ class WorkOrderUpdate(BaseSchema):
     priority: Optional[str] = None
     active: Optional[bool] = None
 
+
 class WorkOrderResponse(WorkOrderBase):
     work_order_id: int
     status: WorkOrderStatus
     created_at: datetime
     updated_at: datetime
     active: bool
+    category: str
+
 
 # --- Work Order Assignment Schemas ---
 class WorkOrderAssignmentBase(BaseSchema):
-    work_order_id: int
+    wo_number: str
     agent_id: int
+
 
 class WorkOrderAssignmentCreate(WorkOrderAssignmentBase):
     pass
+
 
 class WorkOrderAssignmentUpdate(BaseSchema):
     reassigned: Optional[bool] = None
@@ -374,7 +479,8 @@ class WorkOrderAssignmentUpdate(BaseSchema):
     status: Optional[str] = None
     active: Optional[bool] = None
 
-class WorkOrderAssignmentResponse(BaseSchema):
+
+class WorkOrderAssignmentResponse(WorkOrderAssignmentBase):
     assignment_id: int
     work_order_id: int
     wo_number: str
@@ -384,6 +490,9 @@ class WorkOrderAssignmentResponse(BaseSchema):
     status: Optional[str] = None
     active: bool
     updated_at: Optional[datetime] = None
+    subject: Optional[str] = None
+    reassignment_reason: Optional[str] = None
+
 
 # --- Work Order Execution Schemas ---
 class WorkOrderExecutionBase(BaseSchema):
@@ -393,8 +502,10 @@ class WorkOrderExecutionBase(BaseSchema):
     gps_lat: Optional[float] = None
     gps_long: Optional[float] = None
 
+
 class WorkOrderExecutionCreate(WorkOrderExecutionBase):
     pass
+
 
 class WorkOrderExecutionUpdate(BaseSchema):
     end_time: Optional[datetime] = None
@@ -403,6 +514,7 @@ class WorkOrderExecutionUpdate(BaseSchema):
     status: Optional[str] = None
     active: Optional[bool] = None
 
+
 class WorkOrderExecutionResponse(WorkOrderExecutionBase):
     execution_id: int
     end_time: Optional[datetime] = None
@@ -410,6 +522,7 @@ class WorkOrderExecutionResponse(WorkOrderExecutionBase):
     synced: bool
     status: Optional[str] = None
     active: bool
+
 
 # --- Picture Module Schemas ---
 class PictureMetadataBase(BaseSchema):
@@ -424,8 +537,10 @@ class PictureMetadataBase(BaseSchema):
     file_path: str
     file_format: str
 
+
 class PictureMetadataCreate(PictureMetadataBase):
     pass
+
 
 class PictureMetadataUpdate(BaseSchema):
     meter_number: Optional[str] = None
@@ -435,11 +550,13 @@ class PictureMetadataUpdate(BaseSchema):
     status: Optional[str] = None
     active: Optional[bool] = None
 
+
 class PictureMetadataResponse(PictureMetadataBase):
     picture_id: int
     captured_at: datetime
     status: Optional[str] = None
     active: bool
+
 
 # --- Picture Qualification Schemas ---
 class PictureQualificationBase(BaseSchema):
@@ -448,13 +565,16 @@ class PictureQualificationBase(BaseSchema):
     qualification_status: str
     comments: Optional[str] = None
 
+
 class PictureQualificationCreate(PictureQualificationBase):
     pass
+
 
 class PictureQualificationResponse(PictureQualificationBase):
     qualification_id: int
     qualified_at: datetime
     active: bool
+
 
 # --- Auth Schemas ---
 class SignupRequest(BaseSchema):
@@ -463,54 +583,63 @@ class SignupRequest(BaseSchema):
     password: str = Field(..., min_length=8)
     first_name: str
     last_name: str
-    preferred_lang: Optional[str] = None
-    timezone_id: Optional[str] = None
+
 
 class RefreshTokenRequest(BaseSchema):
     refresh_token: str
 
+
 class TokenResponse(BaseSchema):
     """
     Schema for authentication token response.
-    
+
     Attributes:
         access_token (str): JWT access token
         token_type (str): Type of token (default: "bearer")
         expires_in (int): Token expiration time in seconds
     """
+
     access_token: str
     token_type: str = "bearer"
     expires_in: int
 
+
 class ForgotPasswordResponse(BaseSchema):
     """
     Schema for forgot password response.
-    
+
     Attributes:
         message (str): Response message
         reset_key (str): Password reset key
         email (str): User's email
     """
+
     message: str
     reset_key: str
     email: str
 
+
 class LoginResponse(BaseSchema):
     """
     Schema for login response that includes both token and user details.
-    
+
     Attributes:
         token (TokenResponse): Authentication token details
         user (UserResponse): User details
         roles (List[str]): List of user roles
+        permissions (List[str]): List of user permissions
     """
+
     token: TokenResponse
     user: UserResponse
     roles: List[str]
+    permissions: List[str] = []
+
 
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(..., min_length=8)
     new_password: str = Field(..., min_length=8)
+
 
 # --- Work Centre Schemas ---
 class WorkCentreBase(BaseSchema):
@@ -527,8 +656,10 @@ class WorkCentreBase(BaseSchema):
     postal_code: Optional[str] = None
     country: Optional[str] = None
 
+
 class WorkCentreCreate(WorkCentreBase):
     created_by: int
+
 
 class WorkCentreUpdate(BaseSchema):
     name: Optional[str] = None
@@ -545,12 +676,14 @@ class WorkCentreUpdate(BaseSchema):
     status: Optional[str] = None
     active: Optional[bool] = None
 
+
 class WorkCentreResponse(WorkCentreBase):
     work_centre_id: int
     status: str
     active: bool
     created_at: datetime
     updated_at: datetime
+
 
 # --- Subcontractor Schemas ---
 class SubcontractorBase(BaseSchema):
@@ -560,8 +693,10 @@ class SubcontractorBase(BaseSchema):
     description: Optional[str] = None
     location: Optional[str] = None
 
+
 class SubcontractorCreate(SubcontractorBase):
     pass
+
 
 class SubcontractorUpdate(BaseSchema):
     company_name: Optional[str] = None
@@ -572,21 +707,25 @@ class SubcontractorUpdate(BaseSchema):
     status: Optional[str] = None
     active: Optional[bool] = None
 
+
 class SubcontractorResponse(SubcontractorBase):
     subcontractor_id: int
     status: Optional[str] = None
     active: bool
     created_at: datetime
 
+
 # --- Work Center Schemas ---
 class WorkCenterAssignment(BaseModel):
     email: EmailStr
     work_center_id: int
 
+
 class WorkCenterAssignmentResponse(BaseModel):
     user_id: int
     work_center_id: int
     message: str
+
 
 # --- Feedback/Support Schemas ---
 class FeedbackCategory(str, Enum):
@@ -594,16 +733,19 @@ class FeedbackCategory(str, Enum):
     FEATURE_REQUEST = "FEATURE_REQUEST"
     GENERAL = "GENERAL"
 
+
 class FeedbackPriority(str, Enum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
+
 
 class FeedbackCreate(BaseModel):
     title: str = Field(..., min_length=5, max_length=100)
     description: str = Field(..., min_length=10)
     category: str = Field(..., min_length=3, max_length=50)
     severity: str = Field(..., min_length=3, max_length=20)
+
 
 class FeedbackResponse(BaseModel):
     feedback_id: int
@@ -616,17 +758,20 @@ class FeedbackResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+
 class TicketCategory(str, Enum):
     TECHNICAL = "TECHNICAL"
     ACCOUNT = "ACCOUNT"
     BILLING = "BILLING"
     OTHER = "OTHER"
 
+
 class TicketPriority(str, Enum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
     URGENT = "URGENT"
+
 
 class TicketStatus(str, Enum):
     OPEN = "OPEN"
@@ -635,11 +780,11 @@ class TicketStatus(str, Enum):
     RESOLVED = "RESOLVED"
     CLOSED = "CLOSED"
 
+
 class SupportTicketCreate(BaseModel):
     subject: str = Field(..., min_length=5, max_length=100)
     description: str = Field(..., min_length=10)
-    priority: str = Field(..., min_length=3, max_length=20)
-    category: str = Field(..., min_length=3, max_length=50)
+
 
 class SupportTicketResponse(BaseModel):
     ticket_id: int
@@ -652,6 +797,7 @@ class SupportTicketResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+
 # --- User Status Audit Schemas ---
 class UserStatusAuditBase(BaseSchema):
     user_id: int
@@ -660,13 +806,16 @@ class UserStatusAuditBase(BaseSchema):
     reason: str
     remarks: Optional[str] = None
 
+
 class UserStatusAuditCreate(UserStatusAuditBase):
     changed_by: str
+
 
 class UserStatusAuditResponse(UserStatusAuditBase):
     id: int
     changed_by: str
     changed_at: datetime
+
 
 # --- User Auth Provider Schemas ---
 class UserAuthProviderBase(BaseSchema):
@@ -674,14 +823,17 @@ class UserAuthProviderBase(BaseSchema):
     provider_user_id: str
     provider_username: Optional[str] = None
 
+
 class UserAuthProviderCreate(UserAuthProviderBase):
     user_id: int
+
 
 class UserAuthProviderResponse(UserAuthProviderBase):
     id: int
     user_id: int
     created_at: datetime
     updated_at: Optional[datetime] = None
+
 
 # --- User Auth Metadata Schemas ---
 class UserAuthMetadataBase(BaseSchema):
@@ -691,18 +843,21 @@ class UserAuthMetadataBase(BaseSchema):
     refresh_token: Optional[str] = None
     token_expires_at: Optional[datetime] = None
 
+
 class UserAuthMetadataCreate(UserAuthMetadataBase):
     user_id: int
+
 
 class UserAuthMetadataResponse(UserAuthMetadataBase):
     id: int
     user_id: int
 
+
 # --- Notification Schemas ---
 class NotificationTemplateBase(BaseSchema):
     """
     Base schema for notification templates.
-    
+
     Attributes:
         name (str): Template name
         template_key (str): Unique key for the template
@@ -710,20 +865,24 @@ class NotificationTemplateBase(BaseSchema):
         content (str): Template content/body
         notification_type (NotificationType): Type of notification
     """
+
     name: str
     template_key: str
     subject: str
     content: str
     notification_type: NotificationType
 
+
 class NotificationTemplateCreate(NotificationTemplateBase):
     """Schema for creating a new notification template."""
+
     pass
+
 
 class NotificationTemplateUpdate(BaseSchema):
     """
     Schema for updating a notification template.
-    
+
     Attributes:
         name (Optional[str]): Template name
         subject (Optional[str]): Email subject or notification title
@@ -732,6 +891,7 @@ class NotificationTemplateUpdate(BaseSchema):
         active (Optional[bool]): Whether the template is active
         status (Optional[str]): Template status
     """
+
     name: Optional[str] = None
     subject: Optional[str] = None
     content: Optional[str] = None
@@ -739,25 +899,28 @@ class NotificationTemplateUpdate(BaseSchema):
     active: Optional[bool] = None
     status: Optional[str] = None
 
+
 class NotificationTemplateResponse(NotificationTemplateBase):
     """
     Schema for notification template response.
-    
+
     Attributes:
         template_id (int): Template ID
         active (bool): Whether the template is active
         status (Optional[str]): Template status
         created_at (datetime): When the template was created
     """
+
     template_id: int
     active: bool
     status: Optional[str] = None
     created_at: datetime
 
+
 class UserNotificationBase(BaseSchema):
     """
     Base schema for user notifications.
-    
+
     Attributes:
         user_id (Optional[int]): Target user ID
         target_type (Optional[str]): Type of notification target
@@ -767,6 +930,7 @@ class UserNotificationBase(BaseSchema):
         message (str): Notification message
         metadata (Optional[Dict[str, Any]]): Additional notification metadata
     """
+
     user_id: Optional[int] = None
     target_type: Optional[str] = None
     target_value: Optional[str] = None
@@ -775,25 +939,30 @@ class UserNotificationBase(BaseSchema):
     message: str
     metadata: Optional[Dict[str, Any]] = None
 
+
 class UserNotificationCreate(UserNotificationBase):
     """Schema for creating a new user notification."""
+
     pass
+
 
 class UserNotificationUpdate(BaseSchema):
     """
     Schema for updating a user notification.
-    
+
     Attributes:
         status (Optional[str]): Notification status
         read_at (Optional[datetime]): When the notification was read
     """
+
     status: Optional[str] = None
     read_at: Optional[datetime] = None
+
 
 class UserNotificationResponse(UserNotificationBase):
     """
     Schema for user notification response.
-    
+
     Attributes:
         notification_id (int): Notification ID
         status (str): Notification status
@@ -801,22 +970,26 @@ class UserNotificationResponse(UserNotificationBase):
         sent_at (Optional[datetime]): When the notification was sent
         read_at (Optional[datetime]): When the notification was read
     """
+
     notification_id: int
     status: str
     created_at: datetime
     sent_at: Optional[datetime] = None
     read_at: Optional[datetime] = None
 
+
 # --- Data Capture Schemas ---
 class WorkOrderDataCaptureBase(BaseSchema):
-    work_order_id: int
+    wo_number: str
     request_type: RequestType
     agent_id: int
     offline_captured: Optional[bool] = False
     synced: Optional[bool] = True
 
+
 class WorkOrderDataCaptureCreate(WorkOrderDataCaptureBase):
     pass
+
 
 class WorkOrderDataCaptureUpdate(BaseSchema):
     offline_captured: Optional[bool] = None
@@ -824,11 +997,13 @@ class WorkOrderDataCaptureUpdate(BaseSchema):
     status: Optional[str] = None
     active: Optional[bool] = None
 
+
 class WorkOrderDataCaptureResponse(WorkOrderDataCaptureBase):
     capture_id: int
     captured_at: datetime
     status: Optional[str] = None
     active: bool
+
 
 class NewConnectionCaptureBase(BaseSchema):
     capture_id: int
@@ -839,8 +1014,10 @@ class NewConnectionCaptureBase(BaseSchema):
     id_proof_type: Optional[str] = None
     id_proof_number: Optional[str] = None
 
+
 class NewConnectionCaptureCreate(NewConnectionCaptureBase):
     pass
+
 
 class NewConnectionCaptureUpdate(BaseSchema):
     installation_checklist: Optional[str] = None
@@ -852,9 +1029,11 @@ class NewConnectionCaptureUpdate(BaseSchema):
     status: Optional[str] = None
     active: Optional[bool] = None
 
+
 class NewConnectionCaptureResponse(NewConnectionCaptureBase):
     status: Optional[str] = None
     active: bool
+
 
 class SubscriptionCaptureBase(BaseSchema):
     capture_id: int
@@ -865,8 +1044,10 @@ class SubscriptionCaptureBase(BaseSchema):
     activation_status: Optional[str] = "PENDING"
     customer_preferences: Optional[str] = None
 
+
 class SubscriptionCaptureCreate(SubscriptionCaptureBase):
     pass
+
 
 class SubscriptionCaptureUpdate(BaseSchema):
     plan_name: Optional[str] = None
@@ -877,8 +1058,10 @@ class SubscriptionCaptureUpdate(BaseSchema):
     customer_preferences: Optional[str] = None
     active: Optional[bool] = None
 
+
 class SubscriptionCaptureResponse(SubscriptionCaptureBase):
     active: bool
+
 
 class ComplaintCaptureBase(BaseSchema):
     capture_id: int
@@ -888,8 +1071,10 @@ class ComplaintCaptureBase(BaseSchema):
     attempted_fixes: Optional[str] = None
     evidence_url: Optional[str] = None
 
+
 class ComplaintCaptureCreate(ComplaintCaptureBase):
     pass
+
 
 class ComplaintCaptureUpdate(BaseSchema):
     issue_description: Optional[str] = None
@@ -899,8 +1084,10 @@ class ComplaintCaptureUpdate(BaseSchema):
     evidence_url: Optional[str] = None
     active: Optional[bool] = None
 
+
 class ComplaintCaptureResponse(ComplaintCaptureBase):
     active: bool
+
 
 class TerminationCaptureBase(BaseSchema):
     capture_id: int
@@ -910,8 +1097,10 @@ class TerminationCaptureBase(BaseSchema):
     service_end_date: Optional[datetime] = None
     final_billing_info: Optional[str] = None
 
+
 class TerminationCaptureCreate(TerminationCaptureBase):
     pass
+
 
 class TerminationCaptureUpdate(BaseSchema):
     final_meter_reading: Optional[float] = None
@@ -921,16 +1110,20 @@ class TerminationCaptureUpdate(BaseSchema):
     final_billing_info: Optional[str] = None
     active: Optional[bool] = None
 
+
 class TerminationCaptureResponse(TerminationCaptureBase):
     active: bool
+
 
 class OtherRequestCaptureBase(BaseSchema):
     capture_id: int
     custom_notes: Optional[str] = None
     additional_instructions: Optional[str] = None
 
+
 class OtherRequestCaptureCreate(OtherRequestCaptureBase):
     pass
+
 
 class OtherRequestCaptureUpdate(BaseSchema):
     custom_notes: Optional[str] = None
@@ -938,12 +1131,14 @@ class OtherRequestCaptureUpdate(BaseSchema):
     status: Optional[str] = None
     active: Optional[bool] = None
 
+
 class OtherRequestCaptureResponse(OtherRequestCaptureBase):
     status: Optional[str] = None
     active: bool
 
+
 class WorkOrderAcknowledgmentBase(BaseSchema):
-    work_order_id: int
+    wo_number: str
     agent_id: int
     acknowledgment_type: str
     notes: Optional[str] = None
@@ -951,12 +1146,14 @@ class WorkOrderAcknowledgmentBase(BaseSchema):
     gps_lat: Optional[float] = None
     gps_long: Optional[float] = None
 
+
 class WorkOrderAcknowledgmentCreate(BaseModel):
-    work_order_id: int
+    wo_number: str
     agent_id: int
     status: str  # e.g., "ACCEPTED", "REJECTED"
     remarks: Optional[str] = None
     customer_signature: Optional[str] = None
+
 
 class WorkOrderAcknowledgmentUpdate(BaseSchema):
     acknowledgment_type: Optional[str] = None
@@ -967,21 +1164,25 @@ class WorkOrderAcknowledgmentUpdate(BaseSchema):
     status: Optional[str] = None
     active: Optional[bool] = None
 
+
 class WorkOrderAcknowledgmentResponse(WorkOrderAcknowledgmentBase):
     acknowledgment_id: int
     acknowledged_at: datetime
     status: Optional[str] = None
     active: bool
 
+
 class WorkOrderNoteBase(BaseSchema):
-    work_order_id: int
+    wo_number: str
     agent_id: int
     note_text: str
     note_type: Optional[str] = None
     visibility: Optional[str] = "internal"  # internal/external
 
+
 class WorkOrderNoteCreate(WorkOrderNoteBase):
     pass
+
 
 class WorkOrderNoteUpdate(BaseSchema):
     note_text: Optional[str] = None
@@ -990,6 +1191,7 @@ class WorkOrderNoteUpdate(BaseSchema):
     status: Optional[str] = None
     active: Optional[bool] = None
 
+
 class WorkOrderNoteResponse(WorkOrderNoteBase):
     note_id: int
     created_at: datetime
@@ -997,21 +1199,25 @@ class WorkOrderNoteResponse(WorkOrderNoteBase):
     status: Optional[str] = None
     active: bool
 
+
 class WorkOrderStatusLogBase(BaseSchema):
-    work_order_id: int
+    wo_number: str
     old_status: WorkOrderStatus
     new_status: WorkOrderStatus
     changed_by: int
     reason: Optional[str] = None
     notes: Optional[str] = None
 
+
 class WorkOrderStatusLogCreate(WorkOrderStatusLogBase):
     pass
+
 
 class WorkOrderStatusLogUpdate(BaseSchema):
     reason: Optional[str] = None
     notes: Optional[str] = None
     active: Optional[bool] = None
+
 
 class WorkOrderStatusLogResponse(BaseModel):
     status_log_id: int
@@ -1019,8 +1225,9 @@ class WorkOrderStatusLogResponse(BaseModel):
     changed_at: datetime
     changed_by: int
 
+
 class WorkOrderAttachmentBase(BaseSchema):
-    work_order_id: int
+    wo_number: str
     file_name: str
     file_path: str
     file_type: str
@@ -1029,8 +1236,10 @@ class WorkOrderAttachmentBase(BaseSchema):
     description: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
 
+
 class WorkOrderAttachmentCreate(WorkOrderAttachmentBase):
     pass
+
 
 class WorkOrderAttachmentUpdate(BaseSchema):
     description: Optional[str] = None
@@ -1038,22 +1247,26 @@ class WorkOrderAttachmentUpdate(BaseSchema):
     status: Optional[str] = None
     active: Optional[bool] = None
 
+
 class WorkOrderAttachmentResponse(WorkOrderAttachmentBase):
     attachment_id: int
     uploaded_at: datetime
     status: Optional[str] = None
     active: bool
 
+
 class WorkOrderFeedbackBase(BaseSchema):
-    work_order_id: int
+    wo_number: str
     agent_id: int
     rating: int
     feedback_text: Optional[str] = None
     feedback_type: str  # customer/agent/supervisor
     feedback_category: Optional[str] = None
 
+
 class WorkOrderFeedbackCreate(WorkOrderFeedbackBase):
     pass
+
 
 class WorkOrderFeedbackUpdate(BaseSchema):
     rating: Optional[int] = None
@@ -1062,11 +1275,13 @@ class WorkOrderFeedbackUpdate(BaseSchema):
     status: Optional[str] = None
     active: Optional[bool] = None
 
+
 class WorkOrderFeedbackResponse(WorkOrderFeedbackBase):
     feedback_id: int
     submitted_at: datetime
     status: Optional[str] = None
     active: bool
+
 
 class UpdateProfileRequest(BaseSchema):
     first_name: Optional[str] = None
@@ -1077,6 +1292,7 @@ class UpdateProfileRequest(BaseSchema):
     phone_number: Optional[str] = None
     address: Optional[str] = None
     bio: Optional[str] = None
+
 
 class DeviceHealthLogBase(BaseSchema):
     device_id: int
@@ -1091,8 +1307,10 @@ class DeviceHealthLogBase(BaseSchema):
     error_message: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
 
+
 class DeviceHealthLogCreate(DeviceHealthLogBase):
     pass
+
 
 class DeviceHealthLogUpdate(BaseSchema):
     health_status: Optional[str] = None
@@ -1108,17 +1326,18 @@ class DeviceHealthLogUpdate(BaseSchema):
     status: Optional[str] = None
     active: Optional[bool] = None
 
+
 class DeviceHealthLogResponse(DeviceHealthLogBase):
     log_id: int
     logged_at: datetime
     status: Optional[str] = None
     active: bool
 
+
 class SystemFeedbackRequest(BaseModel):
-    category: str = Field(..., description="Feedback category, e.g., BUG, FEATURE, etc.")
     subject: str = Field(..., description="Short summary of the feedback")
     description: str = Field(..., description="Detailed feedback description")
-    priority: str = Field("MEDIUM", description="Priority of the feedback: LOW, MEDIUM, HIGH")
+
 
 class SystemFeedbackResponse(BaseModel):
     feedback_id: int
@@ -1133,6 +1352,7 @@ class SystemFeedbackResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
 
 class WorkOrderDetailResponse(BaseModel):
     work_order_id: int
@@ -1153,3 +1373,154 @@ class WorkOrderDetailResponse(BaseModel):
     active: bool
     assignments: List[WorkOrderAssignmentResponse]
     status_logs: List[WorkOrderStatusLogResponse]
+    category: str
+
+
+class DeactivateDevicePayload(BaseModel):
+    reason: str
+    remarks: Optional[str] = None
+
+
+class WorkOrderReassignmentCreate(BaseModel):
+    agent_id: int
+    subject: Optional[str] = None
+    reassignment_reason: Optional[str] = None
+
+class FormSyncRequest(BaseModel):
+    session_id: str
+    data: Dict[str, Any]
+    progress: float
+    current_step: int
+    device_info: Optional[Dict[str, Any]] = None
+
+class FormSyncResponse(BaseModel):
+    session_id: str
+    sync_status: str
+    message: str
+    last_updated: datetime
+
+# --- Work Order Form Management Schemas ---
+class FormFieldSchema(BaseModel):
+    name: str
+    label: str
+    type: str  # text, select, number, date, file, etc.
+    required: bool = False
+    display_only: bool = False
+    options: Optional[List[str]] = None  # For select fields
+    validation_rules: Optional[Dict[str, Any]] = None
+
+class FormStepSchema(BaseModel):
+    step: int
+    title: str
+    fields: List[FormFieldSchema]
+
+class WorkOrderTemplateSchema(BaseModel):
+    work_order_type: str
+    form_type: str
+    template: Dict[str, Any]  # JSON structure with steps
+    version: str = "1.0"
+    category: str
+
+class WorkOrderTemplateCreate(BaseModel):
+    work_order_type: str
+    form_type: str
+    template: Dict[str, Any]
+    version: str = "1.0"
+    category: str
+
+class WorkOrderTemplateResponse(BaseModel):
+    template_id: int
+    work_order_type: str
+    form_type: str
+    template: Dict[str, Any]
+    version: str
+    active: bool
+    created_at: datetime
+    updated_at: datetime
+    category: str
+
+class FormDataSaveRequest(BaseModel):
+    session_id: str
+    data: Dict[str, Any]  # Step-wise data
+    progress: float
+    current_step: int
+    attachments: Optional[List[Dict[str, Any]]] = None
+
+class FormDataSubmitRequest(BaseModel):
+    session_id: str
+    data: Dict[str, Any]  # Complete form data
+    progress: float = 100.0
+    current_step: int
+    attachments: Optional[List[Dict[str, Any]]] = None
+
+class FormDataResponse(BaseModel):
+    formdata_id: int
+    session_id: str
+    data: Optional[Dict[str, Any]] = None
+    progress: float
+    status: str
+    current_step: int
+    form_type: str
+    last_updated: datetime
+    active: bool
+
+class FormStepResponse(BaseModel):
+    step_id: int
+    step_number: int
+    step_title: str
+    status: str
+    data: Optional[Dict[str, Any]] = None
+    validation_status: bool
+    last_updated: datetime
+
+class FormAttachmentResponse(BaseModel):
+    attachment_id: int
+    step_number: int
+    file_name: str
+    file_path: str
+    file_type: str
+    file_size: int
+    uploaded_at: datetime
+
+class FormSessionResponse(BaseModel):
+    session_id: str
+    progress: float
+    current_step: int
+    last_updated: datetime
+    sync_status: str
+    agent_id: int
+
+class FormAuditResponse(BaseModel):
+    audit_id: int
+    action: str
+    old_data: Optional[Dict[str, Any]] = None
+    new_data: Optional[Dict[str, Any]] = None
+    changed_by: int
+    changed_at: datetime
+
+class FormValidationLogResponse(BaseModel):
+    validation_id: int
+    step_number: int
+    field_name: str
+    error_message: Optional[str] = None
+    is_valid: bool
+    validated_at: datetime
+
+class WorkOrderFormResponse(BaseModel):
+    work_order_id: int
+    wo_number: str
+    work_order_type: str
+    form_type: str
+    template: Dict[str, Any]
+    form_data: Optional[FormDataResponse] = None
+    steps: List[FormStepResponse] = []
+    attachments: List[FormAttachmentResponse] = []
+    sessions: List[FormSessionResponse] = []
+    category: str
+
+class AssignmentStatus(str, Enum):
+    ASSIGNED = "ASSIGNED"
+    UNASSIGNED = "UNASSIGNED"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    BLOCKED = "BLOCKED"
