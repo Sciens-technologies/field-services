@@ -43,8 +43,7 @@ router = APIRouter(prefix="/work-orders", tags=["work-orders"])
 
 # Additional schemas for reassignment and acknowledgment
 class WorkOrderReassignmentCreate(BaseModel):
-    agent_id: int
-    subject: Optional[str] = None
+    agent_email: str
     reassignment_reason: Optional[str] = None
 
 
@@ -74,6 +73,7 @@ async def work_order_status_summary(
     """
     Get a summary of work orders by status (pending, in progress, completed, etc.).
     Always returns all statuses, even if their count is zero.
+    Also returns the total number of work orders as 'total_workorders'.
     """
     # Step 1: Get all possible statuses
     all_statuses = [status.value for status in WorkOrderStatus]
@@ -92,7 +92,11 @@ async def work_order_status_summary(
         key = status.value if hasattr(status, 'value') else str(status)
         status_counts[key] = count
 
-    # Step 4: Return the full dictionary
+    # Step 4: Get total work orders
+    total_workorders = db.query(func.count(WorkOrder.work_order_id)).scalar() or 0
+
+    # Step 5: Return the full dictionary with total
+    status_counts["total_workorders"] = total_workorders
     return status_counts
 
 
@@ -100,11 +104,13 @@ async def work_order_status_summary(
 @role_required(["admin", "super_admin", "supervisor"])
 async def get_all_work_orders(
     category: Optional[str] = None,
+    priority: Optional[str] = None,
+    status: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Get all work orders, optionally filtered by category (zdev, znew, zddr).
+    Get all work orders, optionally filtered by category, priority, and status.
     """
     try:
         query = db.query(WorkOrder).filter(WorkOrder.active.is_(True))
@@ -112,6 +118,10 @@ async def get_all_work_orders(
             # Join with WorkOrderTemplate to filter by template category
             query = query.join(WorkOrderTemplate, WorkOrder.template_id == WorkOrderTemplate.template_id)
             query = query.filter(WorkOrderTemplate.category.ilike(category))
+        if priority:
+            query = query.filter(WorkOrder.priority.ilike(priority))
+        if status:
+            query = query.filter(WorkOrder.status.ilike(status))
         work_orders = query.all()
         result = []
         for work_order in work_orders:
@@ -198,7 +208,7 @@ async def assign_work_order(
     Assign a work order to an agent.
 
     Args:
-        assignment: The work order assignment details (wo_number and agent_id)
+        assignment: The work order assignment details (wo_number and agent_email)
         current_user: Currently authenticated user (will be used as assigned_by)
         db: Database session
 
@@ -227,13 +237,11 @@ async def assign_work_order(
                 status_code=400,
                 detail="Work order must be in PENDING or REJECTED status to assign or reassign",
             )
-        # Validate agent
-        stmt = select(User).where(
-            and_(User.user_id == assignment.agent_id, User.activated.is_(True))
-        )
-        agent = db.execute(stmt).scalar_one_or_none()
+        # Validate agent by email
+        agent = db.query(User).filter(User.email == assignment.agent_email, User.activated.is_(True)).first()
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found or inactive")
+        agent_id = agent.user_id
         # Check agent's active (IN_PROGRESS) assignments
         active_count = db.scalar(
             select(func.count())
@@ -243,7 +251,7 @@ async def assign_work_order(
             )
             .where(
                 and_(
-                    WorkOrderAssignment.agent_id == assignment.agent_id,
+                    WorkOrderAssignment.agent_id == agent_id,
                     WorkOrderAssignment.active.is_(True),
                     WorkOrder.status == WorkOrderStatus.IN_PROGRESS,
                 )
@@ -271,7 +279,7 @@ async def assign_work_order(
         # Create assignment
         new_assignment = WorkOrderAssignment(
             work_order_id=work_order.work_order_id,
-            agent_id=assignment.agent_id,
+            agent_id=agent_id,
             assigned_by=current_user.user_id,
             reassigned=False,
             assigned_at=datetime.utcnow(),
@@ -283,10 +291,10 @@ async def assign_work_order(
         work_order.status = WorkOrderStatus.IN_PROGRESS.value  # type: ignore
         # Log activity
         log = UserActivityLog(
-            user_id=assignment.agent_id,
+            user_id=agent_id,
             actor_id=current_user.user_id,
             action="assign_work_order",
-            details=f"Assigned work order {work_order.wo_number} to agent {assignment.agent_id}",
+            details=f"Assigned work order {work_order.wo_number} to agent {agent_id}",
             timestamp=datetime.utcnow(),
         )
         db.add(log)
@@ -303,11 +311,6 @@ async def assign_work_order(
             status=assignment_dict["status"],
             active=assignment_dict["active"],
         )
-    except IntegrityError as e:
-        db.rollback()
-        raise HTTPException(status_code=400, detail="Invalid reference in request")
-    except HTTPException as he:
-        raise he
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -332,7 +335,7 @@ async def reassign_work_order(
 
     Args:
         assignment_id: The ID of the current assignment
-        reassignment: The reassignment details (new agent_id and optional reason)
+        reassignment: The reassignment details (new agent_email and optional reason)
         current_user: Currently authenticated user (will be used as assigned_by)
         db: Database session
 
@@ -422,14 +425,12 @@ async def reassign_work_order(
             )
 
         # Validate new agent
-        stmt = select(User).where(
-            and_(User.user_id == reassignment.agent_id, User.activated.is_(True))
-        )
-        agent = db.execute(stmt).scalar_one_or_none()
+        agent = db.query(User).filter(User.email == reassignment.agent_email, User.activated.is_(True)).first()
         if not agent:
             raise HTTPException(
                 status_code=404, detail="New agent not found or inactive"
             )
+        agent_id = agent.user_id
 
         # Check agent's active (IN_PROGRESS) assignments
         active_count = db.scalar(
@@ -440,7 +441,7 @@ async def reassign_work_order(
             )
             .where(
                 and_(
-                    WorkOrderAssignment.agent_id == reassignment.agent_id,
+                    WorkOrderAssignment.agent_id == agent_id,
                     WorkOrderAssignment.active.is_(True),
                     WorkOrder.status == WorkOrderStatus.IN_PROGRESS,
                 )
@@ -462,7 +463,7 @@ async def reassign_work_order(
         )
 
         # Prevent reassignment to same agent
-        if current_agent_id == reassignment.agent_id:
+        if current_agent_id == agent_id:
             raise HTTPException(
                 status_code=400, detail="Cannot reassign to the same agent"
             )
@@ -470,10 +471,9 @@ async def reassign_work_order(
         # Create new assignment
         new_assignment = WorkOrderAssignment(
             work_order_id=current_assignment.work_order_id,
-            agent_id=reassignment.agent_id,
+            agent_id=agent_id,
             assigned_by=current_user.user_id,
             reassigned=True,
-            subject=reassignment.subject,
             reassignment_reason=reassignment.reassignment_reason,
             assigned_at=datetime.utcnow(),
             status="PENDING",
@@ -493,10 +493,10 @@ async def reassign_work_order(
 
         # Log activity with reassignment reason
         log = UserActivityLog(
-            user_id=reassignment.agent_id,
+            user_id=agent_id,
             actor_id=current_user.user_id,
             action="reassign_work_order",
-            details=f"Reassigned work order {work_order.wo_number} from agent {current_agent_id} to agent {reassignment.agent_id}. Reason: {reassignment.reassignment_reason or ''}",
+            details=f"Reassigned work order {work_order.wo_number} from agent {current_agent_id} to agent {agent_id}. Reason: {reassignment.reassignment_reason or ''}",
             timestamp=datetime.utcnow(),
         )
         db.add(log)
@@ -671,6 +671,11 @@ async def get_work_order(
             template = db.query(WorkOrderTemplate).filter_by(template_id=template_id).first()
         category = getattr(template, 'category', 'ZDEV') if template else 'ZDEV'
 
+        # Fetch the work centre name
+        work_centre_name = None
+        if hasattr(work_order, 'work_centre') and work_order.work_centre:
+            work_centre_name = work_order.work_centre.name
+
         return WorkOrderDetailResponse(
             work_order_id=int(getattr(work_order, "work_order_id")),
             wo_number=str(getattr(work_order, "wo_number")),
@@ -693,6 +698,7 @@ async def get_work_order(
             status=str(getattr(work_order, "status")),
             created_by=int(getattr(work_order, "created_by")),
             work_centre_id=int(getattr(work_order, "work_centre_id")),
+            work_centre_name=work_centre_name,
             created_at=getattr(work_order, "created_at"),
             updated_at=getattr(work_order, "updated_at"),
             active=True if getattr(work_order, "active", None) in (True, 1) else False,
@@ -732,7 +738,7 @@ async def complete_work_order(
             WorkOrderAssignment.work_order_id == work_order.work_order_id,
             WorkOrderAssignment.active == True
         ).first()
-        if assignment is None or assignment.agent_id != current_user.user_id:
+        if assignment is None or assignment.agent_id != current_user.user_id: # type: ignore
             raise HTTPException(status_code=403, detail="Only the assigned agent or allowed roles can complete the work order")
     work_order.status = WorkOrderStatus.COMPLETED.value  # type: ignore
     db.commit()

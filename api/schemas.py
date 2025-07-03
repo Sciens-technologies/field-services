@@ -470,8 +470,9 @@ class WorkOrderAssignmentBase(BaseSchema):
     agent_id: int
 
 
-class WorkOrderAssignmentCreate(WorkOrderAssignmentBase):
-    pass
+class WorkOrderAssignmentCreate(BaseModel):
+    wo_number: str
+    agent_email: str
 
 
 class WorkOrderAssignmentUpdate(BaseSchema):
@@ -1369,6 +1370,7 @@ class WorkOrderDetailResponse(BaseModel):
     status: str
     created_by: int
     work_centre_id: int
+    work_centre_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     active: bool
@@ -1383,9 +1385,9 @@ class DeactivateDevicePayload(BaseModel):
 
 
 class WorkOrderReassignmentCreate(BaseModel):
-    agent_id: int
-    subject: Optional[str] = None
+    agent_email: str
     reassignment_reason: Optional[str] = None
+
 
 class FormSyncRequest(BaseModel):
     session_id: str
@@ -1394,11 +1396,13 @@ class FormSyncRequest(BaseModel):
     current_step: int
     device_info: Optional[Dict[str, Any]] = None
 
+
 class FormSyncResponse(BaseModel):
     session_id: str
     sync_status: str
     message: str
     last_updated: datetime
+
 
 # --- Work Order Form Management Schemas ---
 class FormFieldSchema(BaseModel):
@@ -1410,10 +1414,12 @@ class FormFieldSchema(BaseModel):
     options: Optional[List[str]] = None  # For select fields
     validation_rules: Optional[Dict[str, Any]] = None
 
+
 class FormStepSchema(BaseModel):
     step: int
     title: str
     fields: List[FormFieldSchema]
+
 
 class WorkOrderTemplateSchema(BaseModel):
     work_order_type: str
@@ -1422,12 +1428,14 @@ class WorkOrderTemplateSchema(BaseModel):
     version: str = "1.0"
     category: str
 
+
 class WorkOrderTemplateCreate(BaseModel):
     work_order_type: str
     form_type: str
     template: Dict[str, Any]
     version: str = "1.0"
     category: str
+
 
 class WorkOrderTemplateResponse(BaseModel):
     template_id: int
@@ -1440,6 +1448,7 @@ class WorkOrderTemplateResponse(BaseModel):
     updated_at: datetime
     category: str
 
+
 class FormDataSaveRequest(BaseModel):
     session_id: str
     data: Dict[str, Any]  # Step-wise data
@@ -1447,12 +1456,14 @@ class FormDataSaveRequest(BaseModel):
     current_step: int
     attachments: Optional[List[Dict[str, Any]]] = None
 
+
 class FormDataSubmitRequest(BaseModel):
     session_id: str
     data: Dict[str, Any]  # Complete form data
     progress: float = 100.0
     current_step: int
     attachments: Optional[List[Dict[str, Any]]] = None
+
 
 class FormDataResponse(BaseModel):
     formdata_id: int
@@ -1465,6 +1476,7 @@ class FormDataResponse(BaseModel):
     last_updated: datetime
     active: bool
 
+
 class FormStepResponse(BaseModel):
     step_id: int
     step_number: int
@@ -1473,6 +1485,7 @@ class FormStepResponse(BaseModel):
     data: Optional[Dict[str, Any]] = None
     validation_status: bool
     last_updated: datetime
+
 
 class FormAttachmentResponse(BaseModel):
     attachment_id: int
@@ -1483,6 +1496,7 @@ class FormAttachmentResponse(BaseModel):
     file_size: int
     uploaded_at: datetime
 
+
 class FormSessionResponse(BaseModel):
     session_id: str
     progress: float
@@ -1490,6 +1504,7 @@ class FormSessionResponse(BaseModel):
     last_updated: datetime
     sync_status: str
     agent_id: int
+
 
 class FormAuditResponse(BaseModel):
     audit_id: int
@@ -1499,6 +1514,7 @@ class FormAuditResponse(BaseModel):
     changed_by: int
     changed_at: datetime
 
+
 class FormValidationLogResponse(BaseModel):
     validation_id: int
     step_number: int
@@ -1506,6 +1522,7 @@ class FormValidationLogResponse(BaseModel):
     error_message: Optional[str] = None
     is_valid: bool
     validated_at: datetime
+
 
 class WorkOrderFormResponse(BaseModel):
     work_order_id: int
@@ -1519,12 +1536,14 @@ class WorkOrderFormResponse(BaseModel):
     sessions: List[FormSessionResponse] = []
     category: str
 
+
 class AssignmentStatus(str, Enum):
     ASSIGNED = "ASSIGNED"
     UNASSIGNED = "UNASSIGNED"
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
     BLOCKED = "BLOCKED"
+
 
 class DeviceUpdateResponse(BaseModel):
     serial_number: str
