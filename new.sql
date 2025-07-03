@@ -1,3 +1,4 @@
+ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(128);
 UPDATE work_order_templates SET category = 'ZDEV' WHERE template_id = 1001;
 UPDATE work_order_templates SET category = 'ZDEV' WHERE template_id = 1002;
 INSERT INTO work_order_templates (

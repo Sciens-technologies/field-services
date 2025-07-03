@@ -12,11 +12,10 @@ import sqlalchemy as sa # type: ignore
 
 
 # revision identifiers, used by Alembic.
-revision: str = '337c2c6c233b'
-# Alembic expects down_revision as a string (comma-separated if multiple)
-down_revision: str = 'add_category_to_work_order_templates,c222f1508fbf'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+revision = '337c2c6c233b'
+down_revision = ('add_category_to_work_order_templates', 'c222f1508fbf')
+branch_labels = None
+depends_on = None
 
 
 def upgrade() -> None:

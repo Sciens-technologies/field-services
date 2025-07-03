@@ -1552,3 +1552,7 @@ class DeviceUpdateResponse(BaseModel):
     status: DeviceStatus
     assignment_user_email: Optional[str] = None
     assignment_user_name: Optional[str] = None
+
+
+class AssignedWorkOrdersResponse(BaseModel):
+    assigned_work_orders: List[WorkOrderDetailResponse]
