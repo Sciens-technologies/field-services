@@ -214,7 +214,7 @@ class UserUpdate(BaseModel):
 
 class UserResponse(BaseSchema):
     user_id: int
-    uuid: str
+    uuid: Optional[str] = None
     username: str
     email: EmailStr
     first_name: str
@@ -232,7 +232,7 @@ class UserResponse(BaseSchema):
 
 class UserResponseWithoutPassword(BaseSchema):
     user_id: int
-    uuid: str
+    uuid: Optional[str] = None
     username: str
     email: EmailStr
     first_name: str
@@ -329,9 +329,8 @@ class PermissionAssignment(BaseModel):
 # --- Device Schemas ---
 class DeviceBase(BaseSchema):
     serial_number: str
+    device_name: str
     model: Optional[str] = None
-    location: Optional[str] = None
-    work_center_id: Optional[int] = None
 
 
 class DeviceCreate(DeviceBase):
@@ -339,11 +338,9 @@ class DeviceCreate(DeviceBase):
 
 
 class DeviceUpdate(BaseSchema):
+    device_name: Optional[str] = None
     model: Optional[str] = None
     status: Optional[DeviceStatus] = None
-    location: Optional[str] = None
-    work_center_id: Optional[int] = None
-    active: Optional[bool] = None
 
 
 class DeviceResponse(DeviceBase):
@@ -355,6 +352,12 @@ class DeviceResponse(DeviceBase):
     active: bool
     work_order_count: int = 0
     category: str
+    # Professional details
+    assignment_user_id: Optional[int] = None
+    assignment_username: Optional[str] = None
+    assignment_assigned_at: Optional[datetime] = None
+    assignment_user_email: Optional[str] = None
+    assignment_user_name: Optional[str] = None
 
 
 class DeviceArtifactBase(BaseSchema):
@@ -390,11 +393,11 @@ class DeviceArtifactResponse(DeviceArtifactBase):
 
 
 class DeviceAssignmentBase(BaseSchema):
-    user_id: Optional[int] = None
+    pass
 
 
 class DeviceAssignmentCreate(DeviceAssignmentBase):
-    pass
+    user_email: str
 
 
 class DeviceAssignmentUpdate(BaseSchema):
@@ -408,14 +411,12 @@ class DeviceAssignmentUpdate(BaseSchema):
 
 class DeviceAssignmentResponse(DeviceAssignmentBase):
     assignment_id: int
-    assigned_by_user_id: Optional[int] = None
-    assigned_by_role: Optional[DeviceAssignmentRole] = None
-    assigned_at: datetime
-    unassigned_at: Optional[datetime] = None
     status: Optional[str] = None
     active: bool
     subject: Optional[str] = None
     reassignment_reason: Optional[str] = None
+    assigned_user_email: Optional[str] = None
+    assigned_user_name: Optional[str] = None
 
 
 class BlockDeviceRequest(BaseModel):
@@ -1524,3 +1525,11 @@ class AssignmentStatus(str, Enum):
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
     BLOCKED = "BLOCKED"
+
+class DeviceUpdateResponse(BaseModel):
+    serial_number: str
+    device_name: str
+    model: Optional[str] = None
+    status: DeviceStatus
+    assignment_user_email: Optional[str] = None
+    assignment_user_name: Optional[str] = None

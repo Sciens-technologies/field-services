@@ -1152,3 +1152,5 @@ WHERE form_type IN (
   'Technical Disconnection Form',
   'Technical Reconnection Form'
 );
+
+   UPDATE devices SET device_name = serial_number;

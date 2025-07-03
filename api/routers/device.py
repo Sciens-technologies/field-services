@@ -28,6 +28,7 @@ from api.schemas import (
     DeviceCreate,
     DeviceUpdate,
     DeviceResponse,
+    DeviceUpdateResponse,
     DeviceArtifactCreate,
     DeviceArtifactResponse,
     DeviceAssignmentCreate,
@@ -61,7 +62,7 @@ def map_user_role_to_assignment_role(user_role_name: str) -> str:
 
 @device_router.post("/devices", response_model=DeviceResponse)
 @role_required(["admin", "super_admin", "supervisor"])
-def create_device(
+async def create_device(
     device: DeviceCreate, 
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -73,17 +74,11 @@ def create_device(
     if existing_device:
         raise HTTPException(status_code=400, detail="Device with this serial number already exists.")
 
-    if device.work_center_id:
-        work_center = db.query(WorkCentre).filter(WorkCentre.work_centre_id == device.work_center_id).first()
-        if not work_center:
-            raise HTTPException(status_code=400, detail="Invalid work_center_id: Work center does not exist.")
-
     try:
         new_device = Device(
             serial_number=device.serial_number,
+            device_name=device.device_name,
             model=device.model,
-            location=device.location,
-            work_center_id=device.work_center_id,
             status=DeviceStatus.REGISTERED,
             active=True
         )
@@ -97,7 +92,7 @@ def create_device(
     
 @device_router.get("/", response_model=List[DeviceResponse], status_code=200)
 @role_required(["admin", "super_admin", "supervisor"])
-def list_devices(
+async def list_devices(
     model: Optional[str] = Query(None),
     status_: Optional[str] = Query(None, alias="status"),
     work_center_id: Optional[int] = Query(None),
@@ -134,10 +129,20 @@ def list_devices(
 
     for device in devices:
         active_assignment = next((da for da in device.assignments if da.active), None)
-
         work_order_count = 0
+        assignment_user_id = None
+        assignment_username = None
+        assignment_assigned_at = None
+        assignment_user_email = None
+        assignment_user_name = None
         if active_assignment and active_assignment.user:
-            user_id = active_assignment.user.user_id
+            user = active_assignment.user
+            user_id = user.user_id
+            assignment_user_id = user_id
+            assignment_username = user.username
+            assignment_user_email = user.email
+            assignment_user_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+            assignment_assigned_at = active_assignment.assigned_at
             work_order_count = (
                 db.query(WorkOrderAssignment)
                 .filter(
@@ -146,75 +151,95 @@ def list_devices(
                 )
                 .count()
             )
-
         out.append(
             DeviceResponse(
                 device_id=cast(int, device.device_id),
                 serial_number=cast(str, device.serial_number),
+                device_name=cast(str, device.device_name or ""),
                 model=cast(Optional[str], device.model),
-                status=cast(DeviceStatus, device.status),
+                status=cast(DeviceStatus, device.status or DeviceStatus.REGISTERED),
                 last_communication=cast(Optional[datetime], device.last_communication),
-                location=cast(Optional[str], device.location),
-                work_center_id=cast(Optional[int], device.work_center_id),
                 created_at=cast(datetime, device.created_at),
                 updated_at=cast(datetime, device.updated_at or device.created_at),
-                active=cast(bool, device.active),
+                active=cast(bool, device.active if device.active is not None else True),
                 work_order_count=work_order_count,
-                category="GENERAL"
+                category="GENERAL",
+                assignment_user_id=assignment_user_id,
+                assignment_username=assignment_username,
+                assignment_assigned_at=assignment_assigned_at,
+                assignment_user_email=assignment_user_email,
+                assignment_user_name=assignment_user_name
             )
         )
 
     return out
 
-@device_router.put("/{device_id}", response_model=DeviceResponse)
+@device_router.put("/{serial_number}", response_model=DeviceUpdateResponse)
 @role_required(["admin", "super_admin", "supervisor"])
-def update_device(
-    device_id: int, 
+async def update_device(
+    serial_number: str, 
     payload: DeviceUpdate, 
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Update the details of a device by device ID.
+    Update the details of a device by serial number.
+    - **serial_number**: str (path) - The serial number of the device to update
+    - **payload**: DeviceUpdate - The fields to update
     """
-    device = db.query(Device).filter(Device.device_id == device_id).first()
+    device = db.query(Device).filter(Device.serial_number == serial_number).first()
     if not device:
         raise HTTPException(404, detail="Device not found")
-
     for field, value in payload.dict(exclude_unset=True).items():
         setattr(device, field, value)
-
-    # Use SQLAlchemy update instead of direct assignment
-    db.query(Device).filter(Device.device_id == device_id).update(
+    db.query(Device).filter(Device.serial_number == serial_number).update(
         {"updated_at": datetime.utcnow()},
         synchronize_session="fetch"
     )
     db.commit()
     db.refresh(device)
-    return _device_to_response(device)
+    # Get assignment info
+    assignment = next((a for a in device.assignments if a.active and a.unassigned_at is None), None)
+    agent = assignment.user if assignment else None
+    assignment_user_email = agent.email if agent else None
+    assignment_user_name = f"{agent.first_name or ''} {agent.last_name or ''}".strip() if agent else None
+    return DeviceUpdateResponse(
+        serial_number=str(device.serial_number),
+        device_name=str(device.device_name or ""),
+        model=str(device.model) if device.model is not None else None,
+        status=DeviceStatus(device.status) if device.status is not None else DeviceStatus.REGISTERED,
+        assignment_user_email=assignment_user_email,
+        assignment_user_name=assignment_user_name
+    )
 
 @device_router.post(
-    "/{device_id}/assign",
+    "/{serial_number}/assign",
     response_model=DeviceAssignmentResponse,
     status_code=status.HTTP_201_CREATED,
 )
 @role_required(["admin", "super_admin", "supervisor"])
-def assign_device(
-    device_id: int,
+async def assign_device(
+    serial_number: str,
     payload: DeviceAssignmentCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     # 1. Validate input
-    if not payload.user_id:
-        raise HTTPException(status_code=400, detail="user_id is required")
+    if not payload.user_email:
+        raise HTTPException(status_code=400, detail="user_email is required")
 
     # 2. Check if device exists
-    device = db.query(Device).filter(Device.device_id == device_id).first()
+    device = db.query(Device).filter(Device.serial_number == serial_number).first()
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
+    device_id = device.device_id
 
-    # 3. Check if device is already assigned to someone (and active)
+    # 3. Look up user by email
+    user = db.query(User).filter(User.email == payload.user_email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # 4. Check if device is already assigned to someone (and active)
     existing_assignment = db.query(DeviceAssignment).filter(
         DeviceAssignment.device_id == device_id,
         DeviceAssignment.active == True
@@ -222,29 +247,19 @@ def assign_device(
     if existing_assignment:
         raise HTTPException(
             status_code=400,
-            detail=f"Device {device_id} is already assigned to another user."
+            detail=f"Device {serial_number} is already assigned to another user."
         )
 
-    # 4. Check if user already has a device assigned
+    # 5. Check if user already has a device assigned
     user_has_device = db.query(DeviceAssignment).filter(
-        DeviceAssignment.user_id == payload.user_id,
+        DeviceAssignment.user_id == user.user_id,
         DeviceAssignment.active == True
     ).first()
     if user_has_device:
         raise HTTPException(
             status_code=400,
-            detail=f"User {payload.user_id} already has a device assigned."
+            detail=f"User {payload.user_email} already has a device assigned."
         )
-
-    # 5. Load user with roles
-    user = (
-        db.query(User)
-        .options(joinedload(User.roles).joinedload(UserRole.role))
-        .filter(User.user_id == payload.user_id)
-        .first()
-    )
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
 
     # 6. Determine user role for assignment from user's roles
     user_role = "AGENT"  # Default role
@@ -262,7 +277,7 @@ def assign_device(
     # 8. Assign the device
     assignment = DeviceAssignment(
         device_id=device_id,
-        user_id=payload.user_id,
+        user_id=user.user_id,
         role=user_role,
         assigned_by_user_id=current_user.user_id,
         assigned_by_role=assigned_by_role,
@@ -274,44 +289,62 @@ def assign_device(
     db.add(assignment)
     db.commit()
     db.refresh(assignment)
-    return DeviceAssignmentResponse.from_orm(assignment)
+    assignment_id = assignment.assignment_id
+    if not isinstance(assignment_id, int):
+        assignment_id = assignment_id.__int__()
+    return DeviceAssignmentResponse(
+        assignment_id=assignment_id,
+        status=str(assignment.status) if assignment.status is not None else None,
+        active=bool(assignment.active),
+        subject=str(assignment.subject) if assignment.subject is not None else None,
+        assigned_user_email=str(user.email) if user.email is not None else None,
+        assigned_user_name=f"{user.first_name or ''} {user.last_name or ''}".strip()
+    )
 
-@device_router.get("/{device_id}/assignments", response_model=List[DeviceAssignmentResponse])
+@device_router.get("/{serial_number}/assignments", response_model=List[DeviceAssignmentResponse])
 @role_required(["admin", "super_admin", "supervisor"])
-def list_assignments(
-    device_id: int, 
+async def list_assignments(
+    serial_number: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    assignments = db.query(DeviceAssignment).filter(DeviceAssignment.device_id == device_id).all()
-
+    device = db.query(Device).filter(Device.serial_number == serial_number).first()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    assignments = db.query(DeviceAssignment).filter(DeviceAssignment.device_id == device.device_id).all()
     if not assignments:
         raise HTTPException(status_code=404, detail="No assignments found for this device")
+    out = []
+    for a in assignments:
+        user = a.user
+        assignment_id = a.assignment_id
+        if not isinstance(assignment_id, int):
+            assignment_id = assignment_id.__int__()
+        out.append(DeviceAssignmentResponse(
+            assignment_id=assignment_id,
+            status=str(a.status) if a.status is not None else None,
+            active=bool(a.active),
+            subject=str(a.subject) if a.subject is not None else None,
+            assigned_user_email=user.email if user else None,
+            assigned_user_name=f"{user.first_name or ''} {user.last_name or ''}".strip() if user else None
+        ))
+    return out
 
-    return [DeviceAssignmentResponse.from_orm(a) for a in assignments]
-
-
-
-@device_router.patch("/{device_id}/block", status_code=200)
+@device_router.patch("/{serial_number}/block", status_code=200)
 @role_required(["admin", "super_admin", "supervisor"])
-def block_or_unblock_device(
-    device_id: int,
+async def block_or_unblock_device(
+    serial_number: str,
     request: BlockDeviceRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    device = db.query(Device).filter(Device.device_id == device_id).first()
+    device = db.query(Device).filter(Device.serial_number == serial_number).first()
     if not device:
         raise HTTPException(404, "Device not found")
-
-    # What status are we moving to?
+    device_id = device.device_id
     target_status = DeviceStatus.BLOCKED if request.block else DeviceStatus.ACTIVE
     if cast(DeviceStatus, device.status) == target_status:
         return {"message": f"Device already {target_status.value.lower()}"}
-
-    # ── 1. audit – omitted here for brevity ────────────────────────────
-
-    # ── 2. update the device itself using SQLAlchemy update ────────────────────────────────────
     db.query(Device).filter(Device.device_id == device_id).update(
         {
             "status": target_status,
@@ -319,8 +352,6 @@ def block_or_unblock_device(
         },
         synchronize_session="fetch"
     )
-
-    # ── 3. cascade to assignments ──────────────────────────────────────
     db.query(DeviceAssignment).filter(
         DeviceAssignment.device_id == device_id,
         DeviceAssignment.active.is_(True)
@@ -332,33 +363,30 @@ def block_or_unblock_device(
         },
         synchronize_session="fetch"
     )
-
     db.commit()
     return {
-        "device_id": device_id,
+        "serial_number": serial_number,
         "new_status": target_status,
         "message": "Device blocked" if request.block else "Device unblocked",
     }
 
 @device_router.post(
-    "/{device_id}/deactivate",
+    "/{serial_number}/deactivate",
     status_code=status.HTTP_200_OK
 )
 @role_required(["admin", "super_admin", "supervisor"])
-def deactivate_device(
-    device_id: int,
+async def deactivate_device(
+    serial_number: str,
     reason: str = Query("", max_length=500),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    device = db.query(Device).filter(Device.device_id == device_id).first()
+    device = db.query(Device).filter(Device.serial_number == serial_number).first()
     if not device:
         raise HTTPException(404, detail="Device not found")
-
+    device_id = device.device_id
     if cast(DeviceStatus, device.status) == DeviceStatus.DEACTIVATED:
         return {"message": "Device already deactivated"}
-
-    # 1. Create audit entry
     audit = DeviceStatusAudit(
         device_id=device.device_id,
         status_before=device.status,
@@ -367,8 +395,6 @@ def deactivate_device(
         changed_by_user_id=current_user.user_id,
     )
     db.add(audit)
-
-    # 2. Deactivate the device
     db.query(Device).filter(Device.device_id == device_id).update(
         {
             "status": DeviceStatus.DEACTIVATED,
@@ -377,8 +403,6 @@ def deactivate_device(
         },
         synchronize_session="fetch"
     )
-
-    # 3. Deactivate all device assignments
     db.query(DeviceAssignment).filter(
         DeviceAssignment.device_id == device_id,
         DeviceAssignment.active == True
@@ -390,20 +414,15 @@ def deactivate_device(
         },
         synchronize_session="fetch"
     )
-
-    # 4. Get all agents linked to this device
     agent_ids = [
         row[0] for row in db.query(DeviceAssignment.user_id)
         .filter(DeviceAssignment.device_id == device_id, DeviceAssignment.active == False)
         .all()
     ]
-
-    # 5. Get pending/in-progress work orders assigned to these agents
     work_order_ids = db.query(WorkOrderAssignment.work_order_id).filter(
         WorkOrderAssignment.agent_id.in_(agent_ids),
         WorkOrderAssignment.active == True
     )
-
     open_wos = db.query(WorkOrder).filter(
         WorkOrder.work_order_id.in_(work_order_ids),
         WorkOrder.status.in_([
@@ -411,7 +430,6 @@ def deactivate_device(
             WorkOrderStatus.IN_PROGRESS.value
         ])
     ).all()
-
     pending_work_orders = [
         {
             "work_order_id": wo.work_order_id,
@@ -420,14 +438,11 @@ def deactivate_device(
         }
         for wo in open_wos
     ]
-
-    # 6. Get available replacement devices
     available_devices = db.query(Device).filter(
         Device.device_id != device_id,
         Device.active == True,
         Device.status == DeviceStatus.ACTIVE.value
     ).all()
-
     available_devices_response = [
         {
             "device_id": d.device_id,
@@ -435,34 +450,28 @@ def deactivate_device(
         }
         for d in available_devices
     ]
-
     db.commit()
     return {
-        "message": f"Device {device_id} deactivated successfully.",
+        "message": f"Device {serial_number} deactivated successfully.",
         "pending_work_orders": pending_work_orders,
         "available_devices": available_devices_response
     }
 
-@device_router.post("/{device_id}/activate", status_code=200)
+@device_router.post("/{serial_number}/activate", status_code=200)
 @role_required(["admin", "super_admin", "supervisor"])
-def activate_device(
-    device_id: int,
+async def activate_device(
+    serial_number: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    device = db.query(Device).filter(Device.device_id == device_id).first()
+    device = db.query(Device).filter(Device.serial_number == serial_number).first()
     if not device:
         raise HTTPException(404, detail="Device not found")
-
+    device_id = device.device_id
     if cast(DeviceStatus, device.status) == DeviceStatus.ACTIVE:
         return {"message": "Device is already active"}
-
     if cast(DeviceStatus, device.status) != DeviceStatus.DEACTIVATED:
         raise HTTPException(400, detail="Only deactivated devices can be activated")
-
-    # Optional: validate assignments or health logs here
-
-    # Update status using SQLAlchemy update
     db.query(Device).filter(Device.device_id == device_id).update(
         {
             "status": DeviceStatus.ACTIVE,
@@ -471,8 +480,6 @@ def activate_device(
         },
         synchronize_session="fetch"
     )
-
-    # Log audit
     audit = DeviceStatusAudit(
         device_id=device.device_id,
         status_before=device.status,
@@ -481,10 +488,8 @@ def activate_device(
         changed_by_user_id=current_user.user_id
     )
     db.add(audit)
-
     db.commit()
-
-    return {"message": f"Device {device_id} activated successfully"}
+    return {"message": f"Device {serial_number} activated successfully."}
 
 @device_router.get("/status-summary")
 async def device_status_summary(db: Session = Depends(get_db)):
@@ -519,7 +524,7 @@ async def device_dashboard_stats(
 
 @device_router.post("/devices/bulk-upload", summary="Bulk upload devices via CSV or Excel", description="Admin or Supervisor can upload a CSV or Excel file to create multiple devices at once.")
 @role_required(["admin", "super_admin", "supervisor"])
-def bulk_upload_devices(
+async def bulk_upload_devices(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -540,25 +545,22 @@ def bulk_upload_devices(
     for idx, row in enumerate(reader, 1):
         try:
             serial_number = row.get("serial_number") or ""
+            device_name = row.get("device_name") or ""
             model = row.get("model") or None
-            location = row.get("location") or None
-            work_center_id = row.get("work_center_id")
-            if not serial_number:
-                raise ValueError("Missing required device field: serial_number")
+            if not serial_number or not device_name:
+                raise ValueError("Missing required device field: serial_number or device_name")
             device_data = DeviceCreate(
                 serial_number=serial_number,
-                model=model,
-                location=location,
-                work_center_id=int(work_center_id) if work_center_id else None
+                device_name=device_name,
+                model=model
             )
             existing_device = db.query(Device).filter(Device.serial_number == device_data.serial_number).first()
             if existing_device:
                 raise ValueError(f"Device with serial_number {device_data.serial_number} already exists.")
             new_device = Device(
                 serial_number=device_data.serial_number,
+                device_name=device_data.device_name,
                 model=device_data.model,
-                location=device_data.location,
-                work_center_id=device_data.work_center_id,
                 status=DeviceStatus.REGISTERED,
                 active=True
             )
@@ -578,31 +580,36 @@ def _device_to_response(device: Device) -> DeviceResponse:
         (a for a in device.assignments if a.active and a.unassigned_at is None),
         None,
     )
-
     agent = assignment.user if assignment else None
-
+    assignment_user_id = agent.user_id if agent else None
+    assignment_username = agent.username if agent else None
+    assignment_user_email = agent.email if agent else None
+    assignment_user_name = f"{agent.first_name or ''} {agent.last_name or ''}".strip() if agent else None
+    assignment_assigned_at = assignment.assigned_at if assignment else None
     # Count active work orders assigned to the same user
     open_statuses = {"PENDING", "ASSIGNED", "IN_PROGRESS"}
     work_order_count = 0
-
     if agent:
         work_order_count = sum(
             1
             for woa in agent.agent_work_order_assignments
             if woa.active and woa.work_order and woa.work_order.status.name in open_statuses
         )
-
     return DeviceResponse(
         device_id=cast(int, device.device_id),
         serial_number=cast(str, device.serial_number),
+        device_name=cast(str, device.device_name or ""),
         model=cast(Optional[str], device.model),
-        status=cast(DeviceStatus, device.status),
+        status=cast(DeviceStatus, device.status or DeviceStatus.REGISTERED),
         last_communication=cast(Optional[datetime], device.last_communication),
-        location=cast(Optional[str], device.location),
-        work_center_id=cast(Optional[int], device.work_center_id),
         created_at=cast(datetime, device.created_at),
         updated_at=cast(datetime, device.updated_at or device.created_at),
-        active=cast(bool, device.active),
+        active=cast(bool, device.active if device.active is not None else True),
         work_order_count=work_order_count,
-        category="GENERAL"
+        category="GENERAL",
+        assignment_user_id=assignment_user_id,
+        assignment_username=assignment_username,
+        assignment_assigned_at=assignment_assigned_at,
+        assignment_user_email=assignment_user_email,
+        assignment_user_name=assignment_user_name
     )

@@ -138,8 +138,10 @@ async def get_all_work_orders(
                     agent_id=int(getattr(a, "agent_id")),
                     reassigned=bool(getattr(a, "reassigned")),
                     assigned_at=getattr(a, "assigned_at"),
-                    status=str(getattr(a, "status")) if getattr(a, "status") is not None else None,
-                    active=bool(getattr(a, "active")),
+                    status=str(getattr(a, "status"))
+                    if getattr(a, "status") is not None
+                    else None,
+                    active=True if getattr(a, "active", None) in (True, 1) else False,
                 )
                 for a in assignments
             ]
@@ -168,7 +170,7 @@ async def get_all_work_orders(
                 work_centre_id=int(getattr(work_order, "work_centre_id")),
                 created_at=getattr(work_order, "created_at"),
                 updated_at=getattr(work_order, "updated_at"),
-                active=bool(getattr(work_order, "active")),
+                active=True if getattr(work_order, "active", None) in (True, 1) else False,
                 assignments=assignment_responses,
                 status_logs=status_log_responses,
                 category=category_val
@@ -214,21 +216,16 @@ async def assign_work_order(
                 detail="wo_number must be provided.",
             )
         # Lookup work order by wo_number
-        work_order = db.query(WorkOrder).filter(WorkOrder.wo_number == assignment.wo_number, WorkOrder.active.is_(True)).first()
+        work_order = db.query(WorkOrder).filter(WorkOrder.wo_number == assignment.wo_number).first()
         if not work_order:
             raise HTTPException(
-                status_code=404, detail="Work order not found or inactive"
+                status_code=404, detail="Work order not found"
             )
-        work_order_status = db.scalar(
-            select(WorkOrder.status).where(
-                WorkOrder.wo_number == assignment.wo_number
-            )
-        )
-        # Only allow assignment if status is PENDING or NEW
-        if work_order_status not in [WorkOrderStatus.PENDING, "NEW"]:
+        # Only allow assignment if status is PENDING or REJECTED
+        if work_order.status not in [WorkOrderStatus.PENDING, WorkOrderStatus.REJECTED]:
             raise HTTPException(
                 status_code=400,
-                detail="Work order must be in PENDING or NEW status to assign",
+                detail="Work order must be in PENDING or REJECTED status to assign or reassign",
             )
         # Validate agent
         stmt = select(User).where(
@@ -282,6 +279,8 @@ async def assign_work_order(
             active=True,
         )
         db.add(new_assignment)
+        # Set work order status to IN_PROGRESS on assignment
+        work_order.status = WorkOrderStatus.IN_PROGRESS.value  # type: ignore
         # Log activity
         log = UserActivityLog(
             user_id=assignment.agent_id,
@@ -387,32 +386,21 @@ async def reassign_work_order(
             .options(
                 joinedload(WorkOrder.assignments), joinedload(WorkOrder.status_logs)
             )
-            .filter(
-                WorkOrder.work_order_id == current_assignment.work_order_id,
-                WorkOrder.active.is_(True),
-            )
+            .filter(WorkOrder.work_order_id == current_assignment.work_order_id)
             .first()
         )
         if not work_order:
             raise HTTPException(status_code=404, detail="Work order not found")
-
-        # Get work order status
-        work_order_status = db.scalar(
-            select(WorkOrder.status).where(
-                WorkOrder.work_order_id == work_order.work_order_id
-            )
-        )
         # Only allow reassignment if status is PENDING, NEW, or REJECTED
-        if work_order_status not in [
-            WorkOrderStatus.PENDING,
-            "NEW",
-            WorkOrderStatus.REJECTED,
-            "REJECTED",
-        ]:
+        status_val = getattr(work_order.status, 'value', work_order.status)
+        if str(status_val).upper() not in ["PENDING", "NEW", "REJECTED"]:
             raise HTTPException(
                 status_code=400,
                 detail="Work order must be in PENDING, NEW, or REJECTED status to reassign",
             )
+        # On reassignment, set status to IN_PROGRESS
+        work_order.status = WorkOrderStatus.IN_PROGRESS.value  # type: ignore
+        db.commit()
 
         # Check if current assignment is already ACCEPTED - prevent reassignment of accepted work orders
         current_assignment_status = db.scalar(
@@ -553,172 +541,46 @@ async def acknowledge_work_order(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    Acknowledge a work order assignment.
-    If accepted, set work order status to IN_PROGRESS.
-    If rejected and no other active assignments, keep as PENDING or set to REJECTED.
-    """
-    try:
-        # Validate status
-        valid_statuses = {"ACCEPTED", "REJECTED"}
-        status_value = acknowledgment.status.upper() if acknowledgment.status else None
-        if status_value not in valid_statuses:
-            raise HTTPException(
-                status_code=422,
-                detail="Status must be either 'ACCEPTED' or 'REJECTED'.",
-            )
-        if status_value == "REJECTED" and (
-            not acknowledgment.remarks or not acknowledgment.remarks.strip()
-        ):
-            raise HTTPException(
-                status_code=422,
-                detail="Remarks are required when status is 'REJECTED'.",
-            )
-
-        # Get the work order first to check if it exists and is active
-        work_order = (
-            db.query(WorkOrder)
-            .filter(
-                WorkOrder.wo_number == wo_number, WorkOrder.active.is_(True)
-            )
-            .first()
-        )
-        if not work_order:
-            raise HTTPException(
-                status_code=404, detail="Work order not found or inactive"
-            )
-
-        # Get the active assignment for this work order
-        assignment = (
-            db.query(WorkOrderAssignment)
-            .filter(
-                WorkOrderAssignment.wo_number == wo_number,
-                WorkOrderAssignment.active.is_(True),
-            )
-            .first()
-        )
-        if not assignment:
-            raise HTTPException(
-                status_code=404, detail="No active assignment found for this work order"
-            )
-
-        # Get the agent_id as a plain value directly from the database
-        agent_id_value = db.scalar(
-            select(WorkOrderAssignment.agent_id).where(
-                WorkOrderAssignment.wo_number == wo_number
-            )
-        )
-        if agent_id_value is None:
-            raise HTTPException(
-                status_code=500, detail="Assignment agent_id is not a valid value"
-            )
-        agent_id_value = int(agent_id_value)
-        # Check if current user is the assigned agent or has supervisor/admin role
-        user_id = current_user.user_id
-        if not isinstance(user_id, int):
-            user_id = int(getattr(current_user, 'user_id', 0))
-        user_roles = await get_user_roles(db, user_id)
-        is_supervisor_or_admin = any(role in ['supervisor', 'admin', 'super_admin'] for role in user_roles)
-        
-        if agent_id_value != int(current_user.user_id) and not is_supervisor_or_admin:  # type: ignore
-            raise HTTPException(
-                status_code=403,
-                detail="Only the assigned agent or supervisor/admin can acknowledge this work order",
-            )
-
-        # Check if the work order is already acknowledged
-        if assignment.status in ["ACCEPTED", "REJECTED"]:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Work order is already {assignment.status.lower()}",
-            )
-
-        # Get work order status
-        work_order_status = db.scalar(
-            select(WorkOrder.status).where(
-                WorkOrder.wo_number == wo_number
-            )
-        )
-
-        # Update assignment status and deactivate if rejected
-        update_values = {"status": status_value, "updated_at": datetime.utcnow()}
-        if status_value == "REJECTED":
-            update_values["active"] = False
-
-        update_stmt = (
-            update(WorkOrderAssignment)
-            .where(WorkOrderAssignment.wo_number == wo_number)
-            .values(**update_values)
-        )
-        db.execute(update_stmt)
-
-        # Log activity
-        log = UserActivityLog(
-            user_id=current_user.user_id,
-            actor_id=current_user.user_id,
-            action="acknowledge_work_order",
-            details=f"Acknowledged work order {wo_number} with status {status_value}. Remarks: {acknowledgment.remarks or 'None'}",
-            timestamp=datetime.utcnow(),
-        )
-        db.add(log)
-
-        db.commit()
-        db.refresh(assignment)
-
-        # --- Status transition logic ---
-        if status_value == "ACCEPTED":
-            # Set work order status to IN_PROGRESS
-            db.query(WorkOrder).filter(WorkOrder.wo_number == wo_number).update({"status": "IN_PROGRESS"})
-            db.commit()
-            # Log status change
-            db.add(WorkOrderStatusLog(
-                work_order_id=work_order.work_order_id,
-                previous_status=work_order.status,
-                new_status="IN_PROGRESS",
-                changed_by=current_user.user_id,
-                reason="Assignment accepted",
-                changed_at=datetime.utcnow(),
-                status="ACTIVE",
-                active=True
-            ))
-            db.commit()
-        elif status_value == "REJECTED":
-            # If no other active assignments, optionally set to REJECTED
-            active_assignments = db.query(WorkOrderAssignment).filter(
-                WorkOrderAssignment.work_order_id == work_order.work_order_id,
-                WorkOrderAssignment.active.is_(True)
-            ).count()
-            if active_assignments == 0:
-                db.query(WorkOrder).filter(WorkOrder.wo_number == wo_number).update({"status": "REJECTED"})
-                db.commit()
-                db.add(WorkOrderStatusLog(
-                    work_order_id=work_order.work_order_id,
-                    previous_status=work_order.status,
-                    new_status="REJECTED",
-                    changed_by=current_user.user_id,
-                    reason="Assignment rejected and no active assignments",
-                    changed_at=datetime.utcnow(),
-                    status="ACTIVE",
-                    active=True
-                ))
-                db.commit()
-        # ... existing response logic ...
-        assignment_dict = assignment.__dict__
-        return WorkOrderAssignmentResponse(
-            assignment_id=assignment_dict["assignment_id"],
-            work_order_id=assignment_dict["work_order_id"],
-            wo_number=str(work_order.wo_number),
-            agent_id=assignment_dict["agent_id"],
-            reassigned=assignment_dict["reassigned"],
-            assigned_at=assignment_dict["assigned_at"],
-            status=status_value,
-            active=assignment_dict["active"],
-        )
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+    # Find the work order
+    work_order = db.query(WorkOrder).filter(WorkOrder.wo_number == wo_number).first()
+    if not work_order:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    # Only allow if status is IN_PROGRESS
+    if work_order.status != WorkOrderStatus.IN_PROGRESS.value: # type: ignore
+        raise HTTPException(status_code=400, detail="Work order must be IN_PROGRESS to acknowledge")
+    # Find the active assignment
+    assignment = db.query(WorkOrderAssignment).filter(
+        WorkOrderAssignment.work_order_id == work_order.work_order_id,
+        WorkOrderAssignment.active == True
+    ).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="No active assignment found")
+    # Only assigned agent or supervisor can acknowledge
+    if current_user.user_id != assignment.agent_id and not any(role.role.role_name in ["super_admin", "admin", "supervisor"] for role in current_user.roles): # type: ignore
+        raise HTTPException(status_code=403, detail="Only the assigned agent or supervisor can acknowledge")
+    # If REJECTED, remarks required
+    if acknowledgment.status == "REJECTED" and not acknowledgment.remarks:
+        raise HTTPException(status_code=400, detail="Remarks required when rejecting a work order")
+    # Update assignment and work order status (case-insensitive)
+    status_upper = str(acknowledgment.status).upper()
+    assignment.status = status_upper  # type: ignore
+    if status_upper == "REJECTED":
+        work_order.status = WorkOrderStatus.REJECTED.value  # type: ignore
+    elif status_upper == "ACCEPTED":
+        work_order.status = WorkOrderStatus.IN_PROGRESS.value  # type: ignore
+    assignment.updated_at = datetime.utcnow()  # type: ignore
+    db.commit()
+    db.refresh(assignment)
+    return WorkOrderAssignmentResponse(
+        assignment_id=int(getattr(assignment, "assignment_id")),
+        work_order_id=int(getattr(assignment, "work_order_id")),
+        wo_number=str(getattr(work_order, "wo_number")),
+        agent_id=int(getattr(assignment, "agent_id")),
+        reassigned=bool(getattr(assignment, "reassigned")),
+        assigned_at=getattr(assignment, "assigned_at"),
+        status=str(getattr(assignment, "status")) if getattr(assignment, "status") is not None else None,
+        active=True if getattr(assignment, "active", None) in (True, 1) else False,
+    )
 
 
 @router.get(
@@ -787,7 +649,7 @@ async def get_work_order(
                 status=str(getattr(a, "status"))
                 if getattr(a, "status") is not None
                 else None,
-                active=bool(getattr(a, "active")),
+                active=True if getattr(a, "active", None) in (True, 1) else False,
             )
             for a in assignments
         ]
@@ -833,7 +695,7 @@ async def get_work_order(
             work_centre_id=int(getattr(work_order, "work_centre_id")),
             created_at=getattr(work_order, "created_at"),
             updated_at=getattr(work_order, "updated_at"),
-            active=bool(getattr(work_order, "active")),
+            active=True if getattr(work_order, "active", None) in (True, 1) else False,
             assignments=assignment_responses,
             status_logs=status_log_responses,
             category=category
@@ -846,7 +708,7 @@ async def get_work_order(
 
 # --- New endpoint to mark a work order as COMPLETED ---
 @router.post("/{wo_number}/complete", summary="Mark work order as completed")
-@role_required(["admin", "super_admin", "supervisor"])
+@role_required(["admin", "super_admin", "supervisor", "agent"])
 async def complete_work_order(
     wo_number: str,
     current_user: User = Depends(get_current_user),
@@ -855,23 +717,23 @@ async def complete_work_order(
     """
     Mark a work order as COMPLETED. Only allowed if status is IN_PROGRESS.
     """
-    work_order = db.query(WorkOrder).filter(WorkOrder.wo_number == wo_number, WorkOrder.active.is_(True)).first()
+    work_order = db.query(WorkOrder).filter(WorkOrder.wo_number == wo_number).first()
     if not work_order:
         raise HTTPException(status_code=404, detail="Work order not found")
-    if str(work_order.status) != "IN_PROGRESS":
-        raise HTTPException(status_code=400, detail="Work order must be IN_PROGRESS to complete")
-    previous_status = work_order.status
-    db.query(WorkOrder).filter(WorkOrder.wo_number == wo_number).update({"status": "COMPLETED"})
-    db.commit()
-    db.add(WorkOrderStatusLog(
-        work_order_id=work_order.work_order_id,
-        previous_status=previous_status,
-        new_status="COMPLETED",
-        changed_by=current_user.user_id,
-        reason="Work order completed",
-        changed_at=datetime.utcnow(),
-        status="ACTIVE",
-        active=True
-    ))
+    # Only allow completion if status is IN_PROGRESS
+    if work_order.status != WorkOrderStatus.IN_PROGRESS.value: # type: ignore
+        raise HTTPException(status_code=400, detail="Only IN_PROGRESS work orders can be completed")
+    # Check if user is allowed: admin/super_admin/supervisor or assigned agent
+    allowed_roles = {"admin", "super_admin", "supervisor"}
+    user_roles = {role.role.role_name for role in current_user.roles}
+    if not (user_roles & allowed_roles):
+        # If not admin/super_admin/supervisor, check if agent is assigned
+        assignment = db.query(WorkOrderAssignment).filter(
+            WorkOrderAssignment.work_order_id == work_order.work_order_id,
+            WorkOrderAssignment.active == True
+        ).first()
+        if assignment is None or assignment.agent_id != current_user.user_id:
+            raise HTTPException(status_code=403, detail="Only the assigned agent or allowed roles can complete the work order")
+    work_order.status = WorkOrderStatus.COMPLETED.value  # type: ignore
     db.commit()
     return {"detail": "Work order marked as COMPLETED"}

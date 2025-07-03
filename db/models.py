@@ -452,6 +452,7 @@ class Device(Base):
 
     device_id = Column(Integer, primary_key=True)
     serial_number = Column(String)
+    device_name = Column(String(100), nullable=False)
     model = Column(String)
     status = Column(String)
     updated_at = Column(DateTime, default=dt.datetime.utcnow)

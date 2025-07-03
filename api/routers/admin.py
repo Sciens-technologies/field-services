@@ -233,7 +233,7 @@ async def admin_create_user(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Create a new user (admin only). The password is generated and sent to the user by email. 'created_by' is set automatically."""
+    """Create a new user (admin only). The password is generated and stored, but email is sent only on role assignment."""
     try:
         # Check if username already exists
         existing_username = (
@@ -287,26 +287,8 @@ async def admin_create_user(
         
         db.add(new_user)
         db.flush()  # Get the user_id
-        
-        # Send temporary password email
-        try:
-            email_val = str(getattr(new_user, "email", ""))
-            username_val = str(getattr(new_user, "username", ""))
-            
-            logger.info(f"Sending temporary password email to {email_val}")
-            email_sent = await send_temporary_password_email(email_val, username_val, temp_password)
-            
-            if not email_sent:
-                logger.warning(f"Failed to send temporary password email to {email_val}")
-                # Don't rollback - still create the user, just log the email failure
-                logger.warning("User created but email notification failed. Password included in response.")
-            
-            logger.info(f"Email sending attempt completed for {email_val}")
-            
-        except Exception as email_exc:
-            logger.error(f"Error sending email to {user_data.email}: {str(email_exc)}")
-            # Don't rollback - still create the user, just log the email failure
-            logger.warning("User created but email notification failed. Password included in response.")
+
+        # Do NOT send email here. Only store password in DB.
 
         # Commit the transaction
         db.commit()
@@ -837,9 +819,11 @@ async def assign_role_and_workcenter(
         raise HTTPException(status_code=404, detail=f"Role '{payload.role_name}' not found.")
     # Check if user already has this role
     existing = db.query(UserRole).filter(UserRole.user_id == user.user_id, UserRole.role_id == role.role_id).first()
+    send_credentials = False
     if not existing:
         user_role = UserRole(user_id=user.user_id, role_id=role.role_id)
         db.add(user_role)
+        send_credentials = True  # Only send credentials if this is the first time assigning a role
 
     # Find workcenter by registration number
     workcenter = db.query(WorkCentre).filter(WorkCentre.registration_number == payload.work_center_registration_number).first()
@@ -849,4 +833,17 @@ async def assign_role_and_workcenter(
     # Assign workcenter
     user.work_centre_id = workcenter.work_centre_id
     db.commit()
+
+    # Send credentials email if this is the first role assignment
+    if send_credentials:
+        try:
+            email_val = str(getattr(user, "email", ""))
+            username_val = str(getattr(user, "username", ""))
+            password_val = str(getattr(user, "password_hash", ""))
+            logger.info(f"Sending temporary password email to {email_val}")
+            email_sent = await send_temporary_password_email(email_val, username_val, password_val)
+            if not email_sent:
+                logger.warning(f"Failed to send temporary password email to {email_val}")
+        except Exception as email_exc:
+            logger.error(f"Error sending email to {user.email}: {str(email_exc)}")
     return {"message": f"Role '{payload.role_name}' and workcenter '{payload.work_center_registration_number}' assigned to user '{payload.email}'."}
