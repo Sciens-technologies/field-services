@@ -595,6 +595,9 @@ async def acknowledge_work_order(
 @role_required(["admin", "super_admin", "supervisor", "agent"])
 async def get_work_order(
     wo_number: Optional[str] = Query(None, description="wo_number of the work order to retrieve"),
+    category: Optional[str] = Query(None, description="Filter by template category"),
+    priority: Optional[str] = Query(None, description="Filter by priority"),
+    status_: Optional[str] = Query(None, alias="status", description="Filter by status"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -633,9 +636,17 @@ async def get_work_order(
         )
         return work_order_detail
     else:
-        assignments = db.query(WorkOrder).join(WorkOrderAssignment).filter(
+        query = db.query(WorkOrder).join(WorkOrderAssignment).filter(
             WorkOrderAssignment.agent_id == current_user.user_id
-        ).all()
+        )
+        if category:
+            query = query.join(WorkOrderTemplate, WorkOrder.template_id == WorkOrderTemplate.template_id)
+            query = query.filter(WorkOrderTemplate.category.ilike(category))
+        if priority:
+            query = query.filter(WorkOrder.priority.ilike(priority))
+        if status_:
+            query = query.filter(WorkOrder.status.ilike(status_))
+        assignments = query.all()
         assigned_work_orders = []
         for wo in assignments:
             skip = False

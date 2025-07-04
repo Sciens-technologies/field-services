@@ -835,6 +835,7 @@ async def assign_role_and_workcenter(
     db.commit()
 
     # Send credentials email if this is the first role assignment
+    password_val = None
     if send_credentials:
         try:
             email_val = str(getattr(user, "email", ""))
@@ -846,4 +847,7 @@ async def assign_role_and_workcenter(
                 logger.warning(f"Failed to send temporary password email to {email_val}")
         except Exception as email_exc:
             logger.error(f"Error sending email to {user.email}: {str(email_exc)}")
-    return {"message": f"Role '{payload.role_name}' and workcenter '{payload.work_center_registration_number}' assigned to user '{payload.email}'."}
+    response = {"message": f"Role '{payload.role_name}' and workcenter '{payload.work_center_registration_number}' assigned to user '{payload.email}'."}
+    if password_val:
+        response["password"] = password_val
+    return response

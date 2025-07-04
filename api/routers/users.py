@@ -22,12 +22,10 @@ from passlib.context import CryptContext
 from fastapi.security import HTTPAuthorizationCredentials
 from auth.auth import security
 import csv
-
-# Set up logging
-logger = logging.getLogger(__name__)
 from typing import Optional, Dict, cast, Any, List
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 from sqlalchemy.sql.schema import Column as SAColumn
+from collections import Counter
 
 from db.database import get_db
 from db.models import (
@@ -42,6 +40,12 @@ from db.models import (
     Role,
     Permission,
     RolePermission,
+    DeviceAssignment,
+    Device,
+    DeviceStatus,
+    WorkOrder,
+    WorkOrderAssignment,
+    WorkOrderStatus,
 )
 from auth.auth import get_current_user, create_access_token
 from api.schemas import (
@@ -66,6 +70,9 @@ from api.schemas import (
 from passlib.hash import bcrypt
 from api.utils.email import send_email, send_password_reset_email
 from api.services.users import get_user_roles, user_to_response
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 # Supported notification types
 NOTIFICATION_TYPES = {
@@ -141,100 +148,58 @@ async def login_for_access_token(
     Accepts only JSON body.
     """
     try:
-        print("\n=== Login Debug Information ===")
-        print(f"Login attempt for username: {login_data.username}")
-
-        # Find user using select()
-        stmt = select(User).where(User.email == login_data.username)
-        user = db.execute(stmt).scalar_one_or_none()
-
+        # 1. Find user by email
+        user = db.execute(select(User).where(User.email == login_data.username)).scalar_one_or_none()
         if not user:
-            print(f"User not found with email: {login_data.username}")
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
-        print(f"Found user: {user.email}")
-
-        # Get password hash using scalar()
-        password_hash = db.scalar(
-            select(User.password_hash).where(User.user_id == user.user_id)
-        )
-        if password_hash is None:
+        # 2. Check password (plain text match)
+        password_hash = db.scalar(select(User.password_hash).where(User.user_id == user.user_id))
+        if password_hash is None or str(password_hash).strip() != login_data.password.strip():
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
-        print(f"Stored password: '{password_hash}' (length: {len(str(password_hash))})")
-        print(
-            f"Input password: '{login_data.password}' (length: {len(login_data.password)})"
-        )
-        print(f"Attempting to verify password...")
-
-        # Verify password - direct string comparison since we store plain text
-        stored_password = str(password_hash).strip()
-        input_password = login_data.password.strip()
-
-        print(
-            f"After strip - Stored: '{stored_password}' (length: {len(stored_password)})"
-        )
-        print(
-            f"After strip - Input: '{input_password}' (length: {len(input_password)})"
-        )
-        print(f"Comparison result: {stored_password == input_password}")
-
-        if stored_password != input_password:
-            print("Password verification failed")
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-
-        print("Password verified successfully")
-
-        # Get user status and activation status using scalar()
+        # 3. Check user activation and status
+        is_activated = db.scalar(select(User.activated).where(User.user_id == user.user_id))
         user_status = db.scalar(select(User.status).where(User.user_id == user.user_id))
-        is_activated = db.scalar(
-            select(User.activated).where(User.user_id == user.user_id)
-        )
-        print(f"User status from DB: {user_status}")
-        print(f"User activation status: {is_activated}")
-
-        # Check if user is active
         if not is_activated:
             raise HTTPException(status_code=401, detail="Account is not activated")
-
         if user_status != UserStatus.ACTIVE:
             raise HTTPException(status_code=401, detail=f"Account is {user_status}")
 
-        # Get user roles
+        # 4. Get user roles
         user_roles = db.query(UserRole).filter(UserRole.user_id == user.user_id, UserRole.active == True).all()
         role_names = []
-        permission_names = set()
         for user_role in user_roles:
             role = db.query(Role).filter(Role.role_id == user_role.role_id).first()
             if role:
                 role_names.append(role.role_name)
-                # Get permissions for this role
-                perms = (
-                    db.query(Permission)
-                    .join(RolePermission)
-                    .filter(RolePermission.role_id == role.role_id, Permission.active == True)
-                    .all()
-                )
-                for perm in perms:
-                    permission_names.add(perm.feature)
 
-        # Generate JWT token
+        # 5. Only for AGENT: check device assignment and device status
+        if any(r.lower() == "agent" for r in role_names):
+            device_assignment = db.query(DeviceAssignment).filter(
+                DeviceAssignment.user_id == user.user_id,
+                DeviceAssignment.active == True
+            ).first()
+            if not device_assignment:
+                raise HTTPException(status_code=403, detail="No active device assignment found for agent.")
+            device = db.query(Device).filter(Device.device_id == device_assignment.device_id).first()
+            if not device:
+                raise HTTPException(status_code=403, detail="Assigned device not found.")
+            device_status = str(device.status).strip().lower() if device.status is not None else None
+            if device_status != 'active' or device.active is not True:
+                raise HTTPException(status_code=403, detail="Your device is inactive, you cannot login.")
+
+        # 6. Generate JWT token and return response
         token_data = {
-            "sub": str(user.user_id),  # Required for get_current_user
+            "sub": str(user.user_id),
             "email": str(user.email),
             "username": str(user.username),
-            "roles": role_names,  # Include roles in token
+            "roles": role_names,
         }
-
-        print(f"Creating token with data: {token_data}")
         access_token = create_access_token(token_data, expires_delta=timedelta(days=1))
         refresh_token = create_access_token(token_data, expires_delta=timedelta(days=7))
-
-        # Store token in DB
         expires_at = datetime.utcnow() + timedelta(days=1)
         user_id = db.scalar(select(User.user_id).where(User.user_id == user.user_id))
-        if user_id is None:
-            raise HTTPException(status_code=404, detail="User not found")
         token_record = Token(
             user_id=user_id,
             access_token=access_token,
@@ -245,25 +210,20 @@ async def login_for_access_token(
         )
         db.add(token_record)
         db.commit()
-
-        # Get user details
         user_details = user_to_response(user, db)
-
-        # Create response with proper type casting
         return LoginResponse(
             token=TokenResponse(
                 access_token=access_token,
                 token_type="bearer",
-                expires_in=86400,  # 24 hours in seconds
+                expires_in=86400,
             ),
             user=UserResponse(**user_details),
             roles=role_names,
-            permissions=list(permission_names),
+            permissions=[],
         )
     except HTTPException as he:
         raise he
     except Exception as e:
-        print(f"\nUnexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1011,6 +971,35 @@ async def get_support_tickets(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@users_router.get("/my-tickets", response_model=List[SupportTicketResponse])
+async def get_my_tickets(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get all support tickets raised by the current user.
+    """
+    try:
+        tickets = db.query(SupportTicket).filter(SupportTicket.user_id == current_user.user_id).order_by(SupportTicket.created_at.desc()).all()
+        return [
+            SupportTicketResponse(
+                ticket_id=getattr(ticket, "ticket_id", 0),
+                user_id=getattr(ticket, "user_id", 0),
+                category=getattr(ticket, "category", ""),
+                subject=getattr(ticket, "subject", ""),
+                description=getattr(ticket, "description", ""),
+                priority=getattr(ticket, "priority", ""),
+                status=getattr(ticket, "status", ""),
+                created_at=getattr(ticket, "created_at", datetime.utcnow()) or datetime.utcnow(),
+                updated_at=getattr(ticket, "updated_at", datetime.utcnow()) or datetime.utcnow(),
+            )
+            for ticket in tickets
+        ]
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 async def _check_permission(
     current_user: User, permission_feature: str, db: Session
 ) -> bool:
@@ -1051,3 +1040,43 @@ async def _check_permission(
     except Exception as e:
         print(f"Error checking permission: {str(e)}")
         return False
+
+
+class WorkOrderDashboardResponse(BaseModel):
+    work_order_id: int
+    wo_number: str
+    title: str
+    description: str
+    work_order_type: str
+    customer_name: str
+    location: str
+    scheduled_date: Optional[datetime] = None
+    due_date: Optional[datetime] = None
+    priority: str
+    status: str
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+
+@users_router.get("/dashboard/workorders")
+async def agent_workorder_dashboard(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get a summary of the agent's work orders by status (PENDING, IN_PROGRESS, COMPLETED, CANCELLED, REJECTED).
+    """
+    assignments = db.query(WorkOrderAssignment).filter(
+        WorkOrderAssignment.agent_id == current_user.user_id,
+        WorkOrderAssignment.active == True
+    ).all()
+    work_order_ids = [a.work_order_id for a in assignments]
+    status_keys = ["PENDING", "IN_PROGRESS", "COMPLETED", "CANCELLED", "REJECTED"]
+    summary = {k: 0 for k in status_keys}
+    if not work_order_ids:
+        return summary
+    work_orders = db.query(WorkOrder).filter(WorkOrder.work_order_id.in_(work_order_ids)).all()
+    for wo in work_orders:
+        status = str(getattr(wo, "status", "")).strip().upper()
+        if status in summary:
+            summary[status] += 1
+    return summary

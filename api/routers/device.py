@@ -251,11 +251,15 @@ async def assign_device(
         )
 
     # 5. Check if user already has a device assigned
-    user_has_device = db.query(DeviceAssignment).filter(
+    device_assignment = db.query(DeviceAssignment).filter(
         DeviceAssignment.user_id == user.user_id,
         DeviceAssignment.active == True
     ).first()
-    if user_has_device:
+    print(f"Device assignment for user: {device_assignment}")
+    if device_assignment:
+        print(f"Device: {device}")
+        print(f"Device status: '{device.status}' (raw)")
+        print(f"Device active: {device.active} (type: {type(device.active)})")
         raise HTTPException(
             status_code=400,
             detail=f"User {payload.user_email} already has a device assigned."
@@ -281,12 +285,14 @@ async def assign_device(
         role=user_role,
         assigned_by_user_id=current_user.user_id,
         assigned_by_role=assigned_by_role,
-        status="ASSIGNED",
+        status="ACTIVE",
         active=True,
         assigned_at=datetime.utcnow()
     )
 
     db.add(assignment)
+    # Set device status to ACTIVE when assigned
+    db.query(Device).filter(Device.device_id == device_id).update({"status": DeviceStatus.ACTIVE, "active": True}, synchronize_session="fetch")
     db.commit()
     db.refresh(assignment)
     assignment_id = assignment.assignment_id
@@ -574,6 +580,24 @@ async def bulk_upload_devices(
             results["errors"].append({"row": idx, "error": str(e)})
     return results
 
+@device_router.patch("/{serial_number}/ready-to-activate", status_code=200)
+@role_required(["admin", "super_admin", "supervisor"])
+async def ready_to_activate_device(
+    serial_number: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    device = db.query(Device).filter(Device.serial_number == serial_number).first()
+    if not device:
+        raise HTTPException(404, "Device not found")
+    device_id = device.device_id
+    db.query(Device).filter(Device.device_id == device_id).update(
+        {"status": DeviceStatus.READY_TO_ACTIVATE, "active": True, "updated_at": datetime.utcnow()},
+        synchronize_session="fetch"
+    )
+    db.commit()
+    return {"serial_number": serial_number, "new_status": DeviceStatus.READY_TO_ACTIVATE, "message": "Device set to READY_TO_ACTIVATE."}
+
 def _device_to_response(device: Device) -> DeviceResponse:
     # Get current active assignment
     assignment = next(
@@ -595,6 +619,14 @@ def _device_to_response(device: Device) -> DeviceResponse:
             for woa in agent.agent_work_order_assignments
             if woa.active and woa.work_order and woa.work_order.status.name in open_statuses
         )
+    print(f"Device assignment: {assignment}")
+    if assignment:
+        print(f"Device: {device}")
+        device_status = None
+        if device is not None and device.status is not None:
+            device_status = str(device.status).strip().upper()
+        print(f"Device status: '{device_status}'")
+        print(f"Device active: {device.active} (type: {type(device.active)})")
     return DeviceResponse(
         device_id=cast(int, device.device_id),
         serial_number=cast(str, device.serial_number),
