@@ -612,6 +612,9 @@ async def get_work_order(
         for field in required_fields:
             if getattr(work_order, field, None) is None:
                 raise HTTPException(status_code=500, detail=f"Work order missing required field: {field}")
+        # Fetch category from related WorkOrderTemplate
+        template = db.query(WorkOrderTemplate).filter_by(template_id=work_order.template_id).first()
+        category_val = getattr(template, 'category', 'ZDEV') if template else 'ZDEV'
         work_order_detail = WorkOrderDetailResponse(
             work_order_id=getattr(work_order, 'work_order_id'),
             wo_number=getattr(work_order, 'wo_number'),
@@ -632,7 +635,7 @@ async def get_work_order(
             active=getattr(work_order, 'active'),
             assignments=[],  # Fill with actual assignments if needed
             status_logs=[],  # Fill with actual status logs if needed
-            category=str(getattr(work_order, 'category', '') or '')
+            category=category_val
         )
         return work_order_detail
     else:
@@ -656,6 +659,9 @@ async def get_work_order(
                     break
             if skip:
                 continue
+            # Fetch category from related WorkOrderTemplate
+            template = db.query(WorkOrderTemplate).filter_by(template_id=wo.template_id).first()
+            category_val = getattr(template, 'category', 'ZDEV') if template else 'ZDEV'
             assigned_work_orders.append(WorkOrderDetailResponse(
                 work_order_id=getattr(wo, 'work_order_id'),
                 wo_number=getattr(wo, 'wo_number'),
@@ -676,7 +682,7 @@ async def get_work_order(
                 active=getattr(wo, 'active'),
                 assignments=[],  # Fill with actual assignments if needed
                 status_logs=[],  # Fill with actual status logs if needed
-                category=str(getattr(wo, 'category', '') or '')
+                category=category_val
             ))
         return AssignedWorkOrdersResponse(assigned_work_orders=assigned_work_orders)
 
