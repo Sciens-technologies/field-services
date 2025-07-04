@@ -11,7 +11,7 @@ from fastapi import (
     Form,
 )
 from sqlalchemy.orm import Session
-from sqlalchemy import update, select, and_, or_
+from sqlalchemy import update, select, and_, or_, func
 from pydantic import EmailStr, BaseModel, Field
 import os
 import secrets
@@ -1080,3 +1080,59 @@ async def agent_workorder_dashboard(
         if status in summary:
             summary[status] += 1
     return summary
+
+class TicketStatusChangeRequest(BaseModel):
+    new_status: str
+    remarks: Optional[str] = None
+
+@users_router.post(
+    "/tickets/{ticket_id}/change-status",
+    summary="Change support ticket status (admin only)",
+    description="Allows admin/super_admin/supervisor to change the status of a support ticket and add remarks.",
+    status_code=status.HTTP_200_OK,
+)
+async def change_ticket_status(
+    ticket_id: int,
+    req: TicketStatusChangeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # Only allow admin, super_admin, supervisor
+    allowed_roles = {"admin", "super_admin", "supervisor"}
+    user_roles = {role.role.role_name for role in getattr(current_user, "roles", [])}
+    if not (user_roles & allowed_roles):
+        raise HTTPException(status_code=403, detail="Only admin, super_admin, or supervisor can change ticket status")
+    ticket = db.query(SupportTicket).filter_by(ticket_id=ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Support ticket not found")
+    old_status = str(getattr(ticket, "status"))
+    setattr(ticket, "status", req.new_status)
+    setattr(ticket, "updated_at", datetime.utcnow())
+    db.add(ticket)
+    # Optionally, log the status change in a separate table if you have one
+    db.commit()
+    return {"detail": f"Ticket status changed from {old_status} to {req.new_status}"}
+
+@users_router.get(
+    "/tickets/status-summary",
+    summary="Get ticket status summary (admin only)",
+    description="Returns total tickets, closed tickets, and open tickets for dashboard.",
+    status_code=status.HTTP_200_OK,
+)
+async def ticket_status_summary(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, int]:
+    # Only allow admin, super_admin, supervisor
+    allowed_roles = {"admin", "super_admin", "supervisor"}
+    user_roles = {role.role.role_name for role in getattr(current_user, "roles", [])}
+    if not (user_roles & allowed_roles):
+        raise HTTPException(status_code=403, detail="Only admin, super_admin, or supervisor can view ticket status summary")
+    total = db.query(SupportTicket).count()
+    closed = db.query(SupportTicket).filter(func.lower(SupportTicket.status).in_(["closed", "close"])).count()
+    open_ = db.query(SupportTicket).filter(func.lower(SupportTicket.status) == "open").count()
+    return {
+        "total_tickets": total,
+        "closed_tickets": closed,
+        "open_tickets": open_,
+    }

@@ -12,7 +12,7 @@ from fastapi import (
     Query,
 )
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import and_, or_, select, update, func
+from sqlalchemy import and_, or_, select, update, func, cast, String
 from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel
 from sqlalchemy.sql.schema import Column as SAColumn
@@ -28,6 +28,8 @@ from db.models import (
     WorkOrderStatusLog,
     WorkOrderTemplate,
     WorkOrderStatus,
+    UserRole,
+    Role,
 )
 from api.schemas import (
     WorkOrderAssignmentCreate,
@@ -66,6 +68,11 @@ class WorkOrderStartResponse(BaseModel):
     message: str
 
 
+class WorkOrderStatusChangeRequest(BaseModel):
+    new_status: str
+    remarks: Optional[str] = None
+
+
 @router.get("/status-summary")
 @role_required(["admin", "super_admin", "supervisor"])
 async def work_order_status_summary(
@@ -94,11 +101,7 @@ async def work_order_status_summary(
         key = status.value if hasattr(status, 'value') else str(status)
         status_counts[key] = count
 
-    # Step 4: Get total work orders
-    total_workorders = db.query(func.count(WorkOrder.work_order_id)).scalar() or 0
-
-    # Step 5: Return the full dictionary with total
-    status_counts["total_workorders"] = total_workorders
+    # Step 6: Return only the status counts (no total_workorders or total_field_agents)
     return status_counts
 
 
@@ -646,9 +649,9 @@ async def get_work_order(
             query = query.join(WorkOrderTemplate, WorkOrder.template_id == WorkOrderTemplate.template_id)
             query = query.filter(WorkOrderTemplate.category.ilike(category))
         if priority:
-            query = query.filter(WorkOrder.priority.ilike(priority))
+            query = query.filter(cast(WorkOrder.priority, String).ilike(priority))
         if status_:
-            query = query.filter(WorkOrder.status.ilike(status_))
+            query = query.filter(cast(WorkOrder.status, String).ilike(status_))
         assignments = query.all()
         assigned_work_orders = []
         for wo in assignments:
